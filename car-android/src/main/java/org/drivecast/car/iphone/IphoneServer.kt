@@ -135,10 +135,11 @@ class IphoneServer(
             return ByteArray(Pairing.ID_LEN).also { SecureRandom().nextBytes(it); f.writeBytes(it) }
         }
 
-        /** 车机的 IPv4 地址，配对时显示出来给 iPhone 手动输入（Bonjour 不通时用）。 */
+        /** 车机的局域网 IPv4 地址，配对时显示出来给 iPhone 手动输入（Bonjour 不通时用）。蜂窝网的公网地址不显示。 */
         fun addresses(): List<String> = runCatching { NetworkInterface.getNetworkInterfaces()?.toList().orEmpty() }
             .getOrDefault(emptyList())
             .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
-            .flatMap { nif -> nif.inetAddresses.toList().filterIsInstance<Inet4Address>().mapNotNull { it.hostAddress } }
+            .flatMap { nif -> nif.inetAddresses.toList().filter { it is Inet4Address && it.isSiteLocalAddress } }
+            .mapNotNull { it.hostAddress }
     }
 }
