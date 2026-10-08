@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.net.LocalServerSocket
+import android.os.Bundle
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
@@ -84,7 +85,7 @@ object Server {
 
             thread(name = "encoder") { pump(encoder, hello) }
             lastHeard = SystemClock.uptimeMillis()
-            control(input, Injector(displayId), displayId)
+            control(input, Injector(displayId), displayId, encoder)
         } catch (e: Throwable) {
             e.printStackTrace()
             if (::out.isInitialized) runCatching { send(encodeFrame(Msg.BYE, e.toString().toByteArray())) }
@@ -131,7 +132,7 @@ object Server {
         }
     }
 
-    private fun control(input: DataInputStream, injector: Injector, displayId: Int) {
+    private fun control(input: DataInputStream, injector: Injector, displayId: Int, encoder: MediaCodec) {
         while (true) {
             val f: Frame = try {
                 input.readFrame()
@@ -142,6 +143,7 @@ object Server {
             lastHeard = SystemClock.uptimeMillis()
             when (f.type) {
                 Msg.PING -> Unit
+                Msg.REQUEST_KEYFRAME -> encoder.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
                 Msg.TOUCH -> inject { injector.touch(Touch.decode(f.payload)) }
                 Msg.KEY -> inject { injector.key(Key.decode(f.payload)) }
                 Msg.LAUNCH -> launch(displayId, String(f.payload, Charsets.UTF_8))

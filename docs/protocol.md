@@ -35,7 +35,7 @@ Wi-Fi 下（往返 10~20ms）吞吐低于视频码率；stderr 也会混进 PTY�
 | `0x02` | HELLO_ACK | 手 → 车 | version u8 · displayId i32 |
 | `0x10` | VIDEO_CONFIG | 手 → 车 | width u16 · height u16 · SPS/PPS（H.264 Annex B） |
 | `0x11` | VIDEO_FRAME | 手 → 车 | pts u64（μs） · flags u8（bit0 关键帧） · H.264 Annex B 数据 |
-| `0x12` | REQUEST_KEYFRAME | 车 → 手 | 空（预留，未实现） |
+| `0x12` | REQUEST_KEYFRAME | 车 → 手 | 空。车机丢帧后发送（最多每秒一次），并丢弃之后的非关键帧直到收到关键帧 |
 | `0x20` | TOUCH | 车 → 手 | action u8（0 按下 / 1 抬起 / 2 移动 / 3 取消） · pointerId u8（v1 恒为 0） · x u16 · y u16 |
 | `0x21` | KEY | 车 → 手 | action u8（0 按下 / 1 抬起） · keycode u16（Android KEYCODE_*） |
 | `0x30` | APP_LIST | 双向 | 预留，未实现 |
@@ -109,7 +109,9 @@ iPhone 没有 ADB，由 iPhone 上的 DriveCast（ReplayKit 广播扩展）**主
 4. 车机按 phoneId 查 LTK、校验 tag（常数时间比较），不对就 `BYE`。
 5. 之后双方都用加密帧。车 → 手 `HELLO`，手 → 车 `HELLO_ACK(displayId = -1)`（-1 表示不能反向控制），
    然后是 `VIDEO_CONFIG` / `VIDEO_FRAME`；车机照常每秒发 `PING`。手机能解开车机的 `HELLO` 才说明车机也持有 LTK。
-6. 新的 iPhone 连接**认证通过后**才顶替当前的投屏，陌生人连上来不会把正在用的投屏挤掉。
+6. 新的 iPhone 连接**认证通过后**才可能顶替当前的投屏，陌生人连上来不会把正在用的投屏挤掉：
+   同一台 iPhone 重连会顶替自己的旧连接；另一台 iPhone 正在投屏时，新来的会收到加密的 `BYE` 被拒绝。
+   认证握手总时限 10 秒；配对从显示配对码起总时限 90 秒（每次读也是 90 秒）。同一 IP 同时只允许一个握手。
 
 ### 配对（只在 iPhone 的 DriveCast App 里做，车机上要先点"添加 iPhone"）
 

@@ -89,6 +89,8 @@ class CastSession(
     private val pendingMove = AtomicReference<Touch?>(null)
     private val sender = Executors.newSingleThreadScheduledExecutor()
     private var decoder: MediaCodec? = null
+    private var waitKeyframe = false
+    private var lastKeyRequest = 0L
 
     /** 能反向控制：安卓手机回 HELLO_ACK 时虚拟屏已建好；iPhone 回 displayId = -1，触摸和按键都不发。 */
     @Volatile
@@ -147,7 +149,14 @@ class CastSession(
 
     private fun decode(f: VideoFrame) {
         val d = decoder ?: return
-        queue(d, f.data, f.ptsUs, 0)
+        // 丢过帧就等下一个关键帧，期间的 P 帧解出来也是花屏
+        if (waitKeyframe && !f.keyframe) return requestKeyframe()
+        if (queue(d, f.data, f.ptsUs, 0)) {
+            if (f.keyframe) waitKeyframe = false
+        } else {
+            waitKeyframe = true
+            requestKeyframe()
+        }
         // 有就立刻渲染，不按时间戳等待
         val info = MediaCodec.BufferInfo()
         while (true) {
@@ -157,15 +166,24 @@ class CastSession(
         }
     }
 
-    private fun queue(d: MediaCodec, data: ByteArray, ptsUs: Long, flags: Int) {
-        // ponytail: 解码器 100ms 内腾不出输入缓冲就丢这一帧，弱车机花屏到下一个关键帧；要更稳再加按关键帧丢帧
+    /** 解码器 100ms 内腾不出输入缓冲就丢掉这一帧，返回 false。 */
+    private fun queue(d: MediaCodec, data: ByteArray, ptsUs: Long, flags: Int): Boolean {
         val i = d.dequeueInputBuffer(100_000)
-        if (i < 0) return
+        if (i < 0) return false
         d.getInputBuffer(i)!!.run {
             clear()
             put(data)
         }
         d.queueInputBuffer(i, 0, data.size, ptsUs, flags)
+        return true
+    }
+
+    /** 最多每秒请求一次，手机端收到后立即出一个关键帧。 */
+    private fun requestKeyframe() {
+        val now = System.nanoTime()
+        if (now - lastKeyRequest < 1_000_000_000L) return
+        lastKeyRequest = now
+        send(Msg.REQUEST_KEYFRAME, ByteArray(0))
     }
 
     private fun send(type: Int, payload: ByteArray) {

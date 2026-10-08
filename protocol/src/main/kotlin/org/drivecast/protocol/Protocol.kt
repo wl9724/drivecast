@@ -12,6 +12,7 @@ object Msg {
     const val HELLO_ACK = 0x02
     const val VIDEO_CONFIG = 0x10
     const val VIDEO_FRAME = 0x11
+    const val REQUEST_KEYFRAME = 0x12
     const val TOUCH = 0x20
     const val KEY = 0x21
     const val LAUNCH = 0x31
