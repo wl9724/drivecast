@@ -16,20 +16,19 @@ import java.util.concurrent.Executors
 
 /** 在车机所在的局域网里找开了无线调试（tcpip 5555）且已授权本车机的手机。 */
 class PhoneFinder(context: Context, private val key: AdbKey, private val log: (String) -> Unit) {
-    private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    // applicationContext：Android 6 的 ConnectivityManager 会把传入的 Context 存进静态字段
+    private val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
     class Found(val adb: AdbConnection, val host: String, val banner: String)
 
+    /** 找到了手机但它不认本车机的密钥（没勾"一律允许"或 7 天没连过），这时要提示插线重新授权。 */
+    var unauthorized = false
+        private set
+
     fun find(remembered: List<String>): Found? {
         val wifi = wifiNetwork()
-        val c = Candidates.of(remembered, wifi?.let(::gatewayOf), subnets(wifi))
-        if (c.quick.isEmpty() && c.scan.isEmpty()) {
-            log("车机没有连上 Wi-Fi，也没有开热点")
-            return null
-        }
-        connectFirst(probe(c.quick, wifi), wifi)?.let { return it }
-        log("正在局域网中寻找手机…")
-        return connectFirst(probe(c.scan, wifi), wifi)
+        val candidates = Candidates.of(remembered, wifi?.let(::gatewayOf), subnets(wifi))
+        return connectFirst(probe(candidates, wifi), wifi)
     }
 
     /**
@@ -47,7 +46,7 @@ class PhoneFinder(context: Context, private val key: AdbKey, private val log: (S
 
     /**
      * Wi-Fi 网络的地址（要绑定）+ 车机其他网卡的地址（比如车机自己开的热点，不能绑定：
-     * 绑定后的 socket 走不到热点网段）。蜂窝网卡跳过，避免扫运营商网络。
+     * 绑定后的 socket 走不到热点网段）。蜂窝网卡跳过，不往运营商网络发连接。
      */
     @Suppress("DEPRECATION")
     private fun subnets(wifi: Network?): List<Subnet> {
@@ -69,7 +68,7 @@ class PhoneFinder(context: Context, private val key: AdbKey, private val log: (S
         return wifiNets + others
     }
 
-    /** 并发探测 5555 端口，按候选顺序返回能连上的。 */
+    /** 并发探测 5555 端口，按候选顺序返回能连上的（候选只有几个，先探测避免逐个等握手超时）。 */
     private fun probe(hosts: List<Candidate>, wifi: Network?): List<Candidate> {
         if (hosts.isEmpty()) return emptyList()
         val pool = Executors.newFixedThreadPool(minOf(PARALLELISM, hosts.size))
@@ -104,14 +103,14 @@ class PhoneFinder(context: Context, private val key: AdbKey, private val log: (S
                 return Found(adb, c.host, banner)
             } catch (e: Exception) {
                 transport?.close()
-                log("${c.host}：${e.message ?: e}")
+                if (e.message.orEmpty().contains("未授权")) unauthorized = true
             }
         }
         return null
     }
 
     private companion object {
-        const val PARALLELISM = 48
+        const val PARALLELISM = 8
         const val PROBE_TIMEOUT_MS = 400
         const val CONNECT_TIMEOUT_MS = 1_500
         const val HANDSHAKE_TIMEOUT_MS = 5_000

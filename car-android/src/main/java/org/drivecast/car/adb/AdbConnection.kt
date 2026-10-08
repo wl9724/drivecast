@@ -27,11 +27,16 @@ class AdbConnection(
     var maxData = MAX_DATA
         private set
     private val streams = ConcurrentHashMap<Int, AdbStream>()
+
+    /** 读线程已退出（断开）。之后打开的流不会再有人唤醒，必须当场失败。 */
+    @Volatile
+    private var dead = false
     private val nextLocalId = AtomicInteger(1)
 
     /**
      * 握手并完成认证，返回手机的 banner（如 "device::ro.product.model=..."）。
-     * [allowPrompt] 为 false 时不发公钥：无线自动搜索不能在别人的手机上弹授权框。
+     * [allowPrompt] 为 false 时（无线自动连接）：不发公钥，不在别人的手机上弹授权框；
+     * 并且对方必须要求认证、认可我们的签名，否则不是授权过本车机的手机。
      */
     fun connect(allowPrompt: Boolean = true): String {
         send(AdbMessage(CNXN, VERSION, MAX_DATA, "host::\u0000".toByteArray()))
@@ -40,7 +45,8 @@ class AdbConnection(
             val m = AdbMessage.read(transport)
             when (m.command) {
                 CNXN -> {
-                    maxData = minOf(m.arg1, MAX_DATA)
+                    if (!allowPrompt && !signed) throw IOException("对方没有要求授权，不是授权过本车机的手机")
+                    maxData = m.arg1.coerceIn(1, MAX_DATA)
                     thread(isDaemon = true, name = "adb-reader") { readLoop() }
                     return String(m.payload, Charsets.UTF_8).trimEnd('\u0000')
                 }
@@ -66,7 +72,8 @@ class AdbConnection(
     fun open(service: String): AdbStream {
         val s = AdbStream(this, nextLocalId.getAndIncrement())
         streams[s.localId] = s
-        send(AdbMessage(OPEN, s.localId, 0, "$service\u0000".toByteArray()))
+        // dead 在读线程清理之前写入、在这里登记之后读取：要么读线程唤醒它，要么这里唤醒
+        if (dead) s.onRemoteClose() else send(AdbMessage(OPEN, s.localId, 0, "$service\u0000".toByteArray()))
         s.awaitOpen()
         return s
     }
@@ -95,6 +102,7 @@ class AdbConnection(
         } catch (_: IOException) {
             // 断开或 close()：下面统一通知各条流
         } finally {
+            dead = true
             streams.values.forEach { it.onRemoteClose() }
             streams.clear()
         }

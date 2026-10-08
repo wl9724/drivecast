@@ -25,6 +25,9 @@ class AdbMessage(
     companion object {
         const val HEADER_SIZE = 24
 
+        /** adbd 的 MAX_PAYLOAD（1 MiB），实际不会超过我们在 CNXN 里声明的 maxdata。 */
+        const val MAX_PAYLOAD = 1 shl 20
+
         const val CNXN = 0x4e584e43
         const val AUTH = 0x48545541
         const val OPEN = 0x4e45504f
@@ -52,6 +55,8 @@ class AdbMessage(
             val length = b.int
             b.int // 校验和：新版 adbd 协商后可能填 0，不校验
             if (b.int != command.inv()) throw IOException("ADB 消息头损坏")
+            // 无线时对端可能是局域网里的任意主机：长度不设上限会被一条消息撑爆内存
+            if (length !in 0..MAX_PAYLOAD) throw IOException("ADB 消息长度异常：$length")
             val payload = ByteArray(length).also { if (length > 0) transport.readFully(it) }
             return AdbMessage(command, arg0, arg1, payload)
         }

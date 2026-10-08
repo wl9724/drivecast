@@ -85,6 +85,39 @@ class TcpTest {
     }
 
     @Test
+    fun deviceWithoutAuthIsNotTakenForThePhone() {
+        val (port, phone) = fakeAdbd { t ->
+            t.expect(CNXN)
+            // ro.adb.secure=0 的电视盒子之类：不要求认证直接 CNXN
+            t.send(AdbMessage(CNXN, 0x01000000, 4096, "device::ro.product.model=TV Box;\u0000".toByteArray()))
+        }
+        try {
+            AdbConnection(TcpTransport.connect("127.0.0.1", 2_000, port), key).use { it.connect(allowPrompt = false) }
+            fail("不要求认证的设备不应被当成手机")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("没有要求授权"))
+        }
+        phone.get(5, TimeUnit.SECONDS)
+    }
+
+    @Test
+    fun oversizedMessageIsRejectedInsteadOfAllocated() {
+        val (port, phone) = fakeAdbd { t ->
+            t.expect(CNXN)
+            val h = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(CNXN).putInt(0).putInt(0).putInt(Int.MAX_VALUE).putInt(0).putInt(CNXN.inv()).array()
+            t.write(h)
+        }
+        try {
+            AdbConnection(TcpTransport.connect("127.0.0.1", 2_000, port), key).use { it.connect(allowPrompt = false) }
+            fail("应拒绝超长消息")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("长度异常"))
+        }
+        phone.get(5, TimeUnit.SECONDS)
+    }
+
+    @Test
     fun silentLinkEndsStreamsAfterReadTimeout() {
         val (port, phone) = fakeAdbd { t ->
             t.expect(CNXN)

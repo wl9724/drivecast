@@ -22,8 +22,10 @@ object WirelessAdb {
         return ips
     }
 
-    /** 让 adbd 回到只走 USB。同样会重启 adbd、断开当前连接。 */
+    /** 让 adbd 回到只走 USB。同样会重启 adbd、断开当前连接，所以本来就没开时什么都不做。 */
     fun disable(adb: AdbConnection) {
+        val port = adb.shell("getprop service.adb.tcp.port").trim()
+        if (port.isEmpty() || port == "0") return
         readAll(adb, "usb:")
     }
 

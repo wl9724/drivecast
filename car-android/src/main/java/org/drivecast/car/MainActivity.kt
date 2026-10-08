@@ -29,6 +29,8 @@ import org.drivecast.car.adb.UsbTransport
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -65,8 +67,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile
     private var worker: Thread? = null
 
-    /** 只在 worker 线程上读写：同一台设备只弹一次权限框。 */
+    /** 同一台设备只主动弹一次权限框；点"断开"再点"连接"会清掉，重新弹。 */
+    @Volatile
     private var askedPermissionFor: String? = null
+
+    /**
+     * 唤醒等待中的连接线程。不用 interrupt：中断标记会留到之后的阻塞调用里，
+     * 把刚建好的连接打断。interrupt 只用来停掉线程。
+     */
+    private val wakeup = Semaphore(0)
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) = wake()
@@ -140,10 +149,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         adb?.let { runCatching { it.close() } }
     }
 
-    /** 等待中的连接线程立刻重试。投屏中不打断：无线切换时 USB 会重新枚举、再触发一次插入。 */
-    private fun wake() {
-        if (session == null) worker?.interrupt()
-    }
+    /** 等待中的连接线程立刻重试。投屏中的不受影响：无线切换时 USB 会重新枚举、再触发一次插入。 */
+    private fun wake() = wakeup.release()
 
     private fun runLoop() {
         val me = Thread.currentThread()
@@ -158,9 +165,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             }
             if (worker !== me) break
             try {
-                Thread.sleep(RETRY_MS)
+                wakeup.tryAcquire(RETRY_MS, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
             }
+            wakeup.drainPermits() // 多次唤醒只算一次；先等后清，等待前到的唤醒不会丢
         }
     }
 
@@ -169,9 +177,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val device = usb.deviceList.values.firstOrNull { UsbTransport.findAdbInterface(it) != null }
         if (device != null && usb.hasPermission(device)) return cast(me, t, connectUsb(device), viaUsb = true)
 
+        var finder: PhoneFinder? = null
         if (prefs.wireless) {
             log("正在无线连接手机…")
-            val found = PhoneFinder(this, key, ::log).find(prefs.phoneIps)
+            finder = PhoneFinder(this, key, ::log)
+            val found = finder.find(prefs.phoneIps)
             if (found != null) {
                 prefs.phoneIps = listOf(found.host) + prefs.phoneIps
                 log("已无线连接 ${model(found.banner)}")
@@ -180,14 +190,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
 
         when {
-            device != null -> {
-                if (askedPermissionFor != device.deviceName) {
-                    askedPermissionFor = device.deviceName
-                    requestPermission(device)
-                }
+            device != null && askedPermissionFor != device.deviceName -> {
+                askedPermissionFor = device.deviceName
+                requestPermission(device)
                 log("请在车机上允许 DriveCast 访问手机")
             }
-            prefs.wireless -> log("没找到手机：确认车机和手机连在同一个热点上。手机重启后需要插一次线")
+            device != null -> log("没有 USB 权限：点\"断开\"再点\"连接\"重新申请，或重新插拔数据线")
+            finder?.unauthorized == true -> log("手机不再信任这台车机（7 天没连或没勾\"一律允许\"）：请插线连接一次")
+            prefs.wireless -> log("没找到手机：确认车机和手机连在同一个 Wi-Fi 或热点上。手机重启后需要插一次线")
             else -> log("用数据线连接手机，并在手机开发者选项里打开 USB 调试")
         }
     }
@@ -208,11 +218,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun cast(me: Thread, t: Target, c: AdbConnection, viaUsb: Boolean) {
         var s: CastSession? = null
         try {
-            if (worker !== me) return
             this.viaUsb = viaUsb
             adb = c
             s = CastSession(c, t.surface, t.hello, ::log)
             session = s
+            // 先发布再检查：要么 stopWorker / 断开 看到这个 session 并关掉它，要么这里看到标记退出
+            if (worker !== me || paused) return
             s.run(serverApk, APPS.first().second)
         } finally {
             s?.let { runCatching { it.close() } }
@@ -255,6 +266,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             session?.let { runCatching { it.close() } }
             log("已断开")
         } else {
+            askedPermissionFor = null
             wake()
         }
     }
