@@ -29,8 +29,11 @@ class AdbConnection(
     private val streams = ConcurrentHashMap<Int, AdbStream>()
     private val nextLocalId = AtomicInteger(1)
 
-    /** 握手并完成认证，返回手机的 banner（如 "device::ro.product.model=..."）。 */
-    fun connect(): String {
+    /**
+     * 握手并完成认证，返回手机的 banner（如 "device::ro.product.model=..."）。
+     * [allowPrompt] 为 false 时不发公钥：无线自动搜索不能在别人的手机上弹授权框。
+     */
+    fun connect(allowPrompt: Boolean = true): String {
         send(AdbMessage(CNXN, VERSION, MAX_DATA, "host::\u0000".toByteArray()))
         var signed = false
         while (true) {
@@ -46,6 +49,8 @@ class AdbConnection(
                     if (!signed) {
                         signed = true
                         send(AdbMessage(AUTH, AUTH_SIGNATURE, 0, key.sign(m.payload)))
+                    } else if (!allowPrompt) {
+                        throw IOException("手机未授权这台车机，请用数据线连接一次并勾选\"一律允许\"")
                     } else {
                         // 签名没被认可：发公钥，手机弹授权框，用户确认后回 CNXN
                         onAuthPrompt()

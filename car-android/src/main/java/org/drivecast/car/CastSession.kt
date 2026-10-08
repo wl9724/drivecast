@@ -5,6 +5,7 @@ import android.media.MediaFormat
 import android.view.Surface
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbStream
+import org.drivecast.protocol.HEARTBEAT_MS
 import org.drivecast.protocol.Hello
 import org.drivecast.protocol.HelloAck
 import org.drivecast.protocol.Key
@@ -20,6 +21,7 @@ import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** 一次投屏：推送并启动手机端服务，收视频解码到 [surface]，把触摸和按键发回手机。 */
 class CastSession(
@@ -29,15 +31,17 @@ class CastSession(
     private val log: (String) -> Unit,
 ) : Closeable {
     private lateinit var stream: AdbStream
-    private val sender = Executors.newSingleThreadExecutor()
+    private val sender = Executors.newSingleThreadScheduledExecutor()
     private var decoder: MediaCodec? = null
 
     /** 阻塞运行直到断开，在后台线程调用。 */
     fun run(serverApk: ByteArray, firstApp: String) {
         push(serverApk)
-        stream = adb.open("exec:CLASSPATH=$REMOTE_PATH app_process / org.drivecast.server.Server")
+        // 2>/dev/null：exec: 的 stderr 和 stdout 混在同一个 PTY 里，会破坏二进制帧
+        stream = adb.open("exec:CLASSPATH=$REMOTE_PATH app_process / org.drivecast.server.Server 2>/dev/null")
         send(Msg.HELLO, hello.encode())
         launch(firstApp)
+        sender.scheduleWithFixedDelay({ write(Msg.PING, ByteArray(0)) }, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS)
 
         val input = DataInputStream(BufferedInputStream(stream.input, 1 shl 16))
         input.skipToMagic()
@@ -64,10 +68,12 @@ class CastSession(
 
     /** 手机端是 shell 身份运行的 APK，每次连接都推一遍，保证和车机端版本一致。 */
     private fun push(apk: ByteArray) {
-        adb.open("exec:sh -c 'head -c ${apk.size} > $REMOTE_PATH'").use {
+        val reply = adb.open("exec:head -c ${apk.size} > $REMOTE_PATH").use {
             it.write(apk)
-            it.input.readBytes() // head 读满后退出，手机关闭这条流
+            // head 读满后退出，手机关闭这条流；这期间收到的任何输出都是错误信息
+            String(it.input.readBytes(), Charsets.UTF_8).trim()
         }
+        if (reply.isNotEmpty()) throw IOException("推送手机端服务失败：$reply")
         log("已推送手机端服务（${apk.size / 1024} KB）")
     }
 
@@ -106,7 +112,12 @@ class CastSession(
 
     private fun send(type: Int, payload: ByteArray) {
         if (!::stream.isInitialized) return
-        sender.execute { runCatching { stream.write(encodeFrame(type, payload)) } }
+        runCatching { sender.execute { write(type, payload) } } // 关闭后提交会被拒绝，忽略
+    }
+
+    /** 只在 sender 线程上调用，保证一帧一次 write、帧之间不交错。 */
+    private fun write(type: Int, payload: ByteArray) {
+        runCatching { stream.write(encodeFrame(type, payload)) }
     }
 
     override fun close() {

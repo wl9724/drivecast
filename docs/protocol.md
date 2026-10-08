@@ -16,9 +16,11 @@
 
 ## 启动
 
-车机通过 ADB 把手机端服务推到 `/data/local/tmp/drivecast-server.apk`，再打开流
-`exec:CLASSPATH=/data/local/tmp/drivecast-server.apk app_process / org.drivecast.server.Server`。
+车机通过 ADB（USB，或手机执行过 `tcpip:5555` 后的 TCP）把手机端服务推到
+`/data/local/tmp/drivecast-server.apk`（`exec:head -c <字节数> > 路径`），再打开流
+`exec:CLASSPATH=/data/local/tmp/drivecast-server.apk app_process / org.drivecast.server.Server 2>/dev/null`。
 这条流的 stdin/stdout 就是协议通道（v1 不需要端口转发，也不需要多条流）。
+adbd 给 `exec:` 分配的是 raw 模式的 PTY，二进制安全，但 stderr 会混进同一个流，所以要重定向掉。
 
 手机端启动后先输出 4 字节魔数 `DCv1`，车机跳过魔数之前的任何杂散输出。
 
@@ -35,10 +37,13 @@
 | `0x21` | KEY | 车 → 手 | action u8（0 按下 / 1 抬起） · keycode u16（Android KEYCODE_*） |
 | `0x30` | APP_LIST | 双向 | 预留，未实现 |
 | `0x31` | LAUNCH | 车 → 手 | 包名（UTF-8），在虚拟屏上启动其桌面入口 |
-| `0x40` | PING / PONG | 双向 | 预留，未实现 |
+| `0x40` | PING | 车 → 手 | 空。车机每秒发一次 |
 | `0x7F` | BYE | 双向 | 原因（UTF-8 文本） |
 
 - 宽高由车机按自己的画面区域给出，取 16 的倍数。
+- **心跳**：adbd 不做 TCP 保活，无线断开（比如车机断电）时手机端的 stdin 不会结束。
+  手机端 5 秒收不到车机的任何消息就自行退出；车机端 10 秒收不到任何数据（视频至少每 100ms 一帧）就判定断开并重连。
+- 手机端启动时会结束上一个仍在运行的实例（pid 记在 `/data/local/tmp/drivecast-server.pid`）。
 - 视频解码器在收到 VIDEO_CONFIG 时（重新）创建。
 
 参考实现：`protocol/src/main/kotlin/org/drivecast/protocol/Protocol.kt`。

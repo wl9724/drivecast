@@ -4,12 +4,15 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
 import org.drivecast.protocol.Frame
 import org.drivecast.protocol.Hello
 import org.drivecast.protocol.HelloAck
 import org.drivecast.protocol.Key
 import org.drivecast.protocol.MAGIC
 import org.drivecast.protocol.Msg
+import org.drivecast.protocol.PHONE_WATCHDOG_MS
 import org.drivecast.protocol.Touch
 import org.drivecast.protocol.VideoConfig
 import org.drivecast.protocol.VideoFrame
@@ -21,6 +24,7 @@ import java.io.DataInputStream
 import java.io.EOFException
 import java.io.FileDescriptor
 import java.io.FileInputStream
+import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintStream
 import kotlin.concurrent.thread
@@ -28,17 +32,23 @@ import kotlin.system.exitProcess
 
 /**
  * 手机端投屏服务。车机通过 ADB 执行：
- * `exec:CLASSPATH=/data/local/tmp/drivecast-server.apk app_process / org.drivecast.server.Server`
- * stdin/stdout 就是协议通道，所以任何杂散输出都会破坏数据流。
+ * `exec:CLASSPATH=/data/local/tmp/drivecast-server.apk app_process / org.drivecast.server.Server 2>/dev/null`
+ * stdin/stdout 就是协议通道（adbd 给 exec: 分配的是 raw 模式 PTY，stderr 也会混进来），
+ * 所以任何杂散输出都会破坏数据流：Java 层的输出全部改写到日志文件。
  */
 object Server {
     private const val LOG = "/data/local/tmp/drivecast-server.log"
+    private const val PID = "/data/local/tmp/drivecast-server.pid"
     private val stdout = BufferedOutputStream(FileOutputStream(FileDescriptor.out), 1 shl 16)
+
+    @Volatile
+    private var lastHeard = SystemClock.uptimeMillis()
 
     @JvmStatic
     fun main(args: Array<String>) {
         PrintStream(FileOutputStream(LOG), true).let { System.setOut(it); System.setErr(it) }
         try {
+            replacePrevious()
             send(MAGIC)
             val input = DataInputStream(BufferedInputStream(FileInputStream(FileDescriptor.`in`)))
             val first = input.readFrame()
@@ -55,6 +65,9 @@ object Server {
             println("虚拟屏 $displayId 已创建")
 
             thread(name = "encoder") { pump(encoder, hello) }
+            // 建虚拟屏期间车机的 PING 还堆在 stdin 里没读，看门狗从这里开始计时
+            lastHeard = SystemClock.uptimeMillis()
+            startWatchdog()
             control(input, Injector(displayId), displayId)
         } catch (e: Throwable) {
             e.printStackTrace()
@@ -110,11 +123,38 @@ object Server {
                 println("车机已断开")
                 return
             }
+            lastHeard = SystemClock.uptimeMillis()
             when (f.type) {
+                Msg.PING -> Unit
                 Msg.TOUCH -> injector.touch(Touch.decode(f.payload))
                 Msg.KEY -> injector.key(Key.decode(f.payload))
                 Msg.LAUNCH -> launch(displayId, String(f.payload, Charsets.UTF_8))
                 else -> println("忽略消息 ${f.type}")
+            }
+        }
+    }
+
+    /** 无线断开时旧实例可能还在跑（还占着虚拟屏和编码器），新实例启动时直接结束它。 */
+    private fun replacePrevious() {
+        val pidFile = File(PID)
+        runCatching {
+            val old = pidFile.readText().trim().toInt()
+            if (old != Process.myPid() && File("/proc/$old/cmdline").readText().contains("org.drivecast.server")) {
+                Process.killProcess(old)
+                println("已结束上一个实例 $old")
+            }
+        }
+        pidFile.writeText(Process.myPid().toString())
+    }
+
+    /** adbd 不做 TCP 保活：车机突然断电时 stdin 不会结束，只能靠心跳超时自己退出。 */
+    private fun startWatchdog() = thread(isDaemon = true, name = "watchdog") {
+        while (true) {
+            Thread.sleep(1_000)
+            if (SystemClock.uptimeMillis() - lastHeard > PHONE_WATCHDOG_MS) {
+                println("车机超过 ${PHONE_WATCHDOG_MS}ms 没有消息，退出")
+                // halt 而不是 exit：编码线程可能卡在写 stdout 上
+                Runtime.getRuntime().halt(0)
             }
         }
     }

@@ -15,6 +15,7 @@ object Msg {
     const val TOUCH = 0x20
     const val KEY = 0x21
     const val LAUNCH = 0x31
+    const val PING = 0x40
     const val BYE = 0x7F
 }
 
@@ -24,6 +25,10 @@ const val VERSION = 1
 val MAGIC = "DCv1".toByteArray(Charsets.US_ASCII)
 
 const val MAX_PAYLOAD = 8 shl 20
+
+/** 车机每秒发一次 PING；手机端这么久收不到任何消息就退出（adbd 发现不了无线断开）。 */
+const val HEARTBEAT_MS = 1_000L
+const val PHONE_WATCHDOG_MS = 5_000L
 
 class Frame(val type: Int, val payload: ByteArray)
 

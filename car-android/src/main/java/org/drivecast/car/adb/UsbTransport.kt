@@ -35,7 +35,13 @@ class UsbTransport private constructor(
         }
     }
 
+    @Volatile
+    private var closed = false
+
+    @Synchronized
     override fun close() {
+        if (closed) return
+        closed = true
         connection.releaseInterface(intf)
         connection.close()
     }
