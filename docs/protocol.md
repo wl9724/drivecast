@@ -61,3 +61,85 @@ Wi-Fi 下（往返 10~20ms）吞吐低于视频码率；stderr 也会混进 PTY�
 5. 车机解码器重建或丢帧后发送 `REQUEST_KEYFRAME`。
 
 音频 v1 不走本协议：手机通过蓝牙 A2DP 连接车机播放。
+
+## iPhone：TCP + 配对 + 加密
+
+iPhone 没有 ADB，由 iPhone 上的 DriveCast（ReplayKit 广播扩展）**主动连车机**。车机是 TCP 服务端：
+
+- 监听端口 **27420**（被占用时用随机端口），双栈，所有网卡。
+- 通过 mDNS/Bonjour 广播服务 `_drivecast._tcp`，TXT 记录 `id=<carId 的 32 位十六进制>`。
+- iPhone 找车机的顺序：Bonjour → 上次连上的地址 → Wi-Fi 网关（iPhone 连车机热点时网关就是车机）→ 用户手动输入的地址。
+
+同一个热点上的任何人都能连这个端口，还能解密 WPA2 流量，所以 iPhone 连接**必须先认证，之后每一帧都加密**。
+
+### 新增消息（握手阶段明文）
+
+| 类型 | 名称 | 方向 | 负载 |
+|---|---|---|---|
+| `0x50` | AUTH_CHALLENGE | 车 → 手 | carId[16] · nonceC[16] |
+| `0x51` | AUTH_RESPONSE | 手 → 车 | phoneId[16] · nonceP[16] · tag[32] |
+| `0x52` | PAIR_START | 手 → 车 | phoneId[16] · pkP[65] · 名称（UTF-8，≤64 字节） |
+| `0x53` | PAIR_KEY | 车 → 手 | pkC[65] |
+| `0x54` | PAIR_COMMIT | 双向 | c[32] |
+| `0x55` | PAIR_REVEAL | 双向 | n[16] |
+
+失败时发明文 `BYE`（原因文本）后断开。
+
+### 常量（`||` 表示拼接，字符串都是 ASCII）
+
+- `pk`：P-256 公钥，65 字节未压缩格式 `04 || X || Y`。收到对方公钥必须校验在曲线上。
+- `code`：车机生成的 6 位随机数（0..999999），`bit_i = (code >> i) & 1`，i = 0..19。**每次配对都换新码，失败一次就作废。**
+- `commitP_i = HMAC-SHA256(key = nP_i[16], "DCv1 P" || pkP || pkC || [0x80 | bit_i])`
+- `commitC_i = HMAC-SHA256(key = nC_i[16], "DCv1 C" || pkC || pkP || [0x80 | bit_i])`
+- `Z` = P-256 ECDH 共享密钥的 x 坐标（32 字节）
+- `LTK = HKDF-SHA256(ikm = Z, salt = 32 个 0 字节, info = "DCv1 LTK" || carId || phoneId || pkP || pkC, L = 32)`
+- `tag = HMAC-SHA256(LTK, "DCv1 AUTH" || carId || phoneId || nonceC || nonceP)`
+- `sess = HKDF-SHA256(ikm = LTK, salt = nonceC || nonceP, info = "DCv1 SESS" || carId || phoneId, L = 32)`；
+  `kP2C = sess[0:16]`（手 → 车），`kC2P = sess[16:32]`（车 → 手）
+
+参考实现和自检：`tools/pairing_ref.py`；两端单元测试共用的测试向量：`docs/testvectors/ios-pairing.json`
+（`python3 -I tools/pairing_ref.py vectors` 生成）。
+
+### 已配对时（每次投屏）
+
+1. 手 → 车：明文魔数 `DCv1`。
+2. 车 → 手：`AUTH_CHALLENGE(carId, nonceC)`。
+3. 手机有这个 carId 的 LTK：手 → 车 `AUTH_RESPONSE(phoneId, nonceP, tag)`。
+4. 车机按 phoneId 查 LTK、校验 tag（常数时间比较），不对就 `BYE`。
+5. 之后双方都用加密帧。车 → 手 `HELLO`，手 → 车 `HELLO_ACK(displayId = -1)`（-1 表示不能反向控制），
+   然后是 `VIDEO_CONFIG` / `VIDEO_FRAME`；车机照常每秒发 `PING`。手机能解开车机的 `HELLO` 才说明车机也持有 LTK。
+6. 新的 iPhone 连接**认证通过后**才顶替当前的投屏，陌生人连上来不会把正在用的投屏挤掉。
+
+### 配对（只在 iPhone 的 DriveCast App 里做，车机上要先点"添加 iPhone"）
+
+1. 同上 1、2。手机没有这个 carId 的 LTK：手 → 车 `PAIR_START(phoneId, pkP, 名称)`。
+2. 车机不在配对模式（"添加 iPhone" 打开后 2 分钟内）就 `BYE`。否则生成临时 P-256 密钥和新配对码，
+   **在车机屏幕上显示配对码**，车 → 手 `PAIR_KEY(pkC)`。配对期间连接超时放宽到 90 秒。
+3. 用户在 iPhone 上输入配对码。同一个码失败过就不再用，提示在车机上重新开始。
+4. i = 0..19 每轮：手 → 车 `PAIR_COMMIT(commitP_i)`；车 → 手 `PAIR_COMMIT(commitC_i)`；
+   手 → 车 `PAIR_REVEAL(nP_i)`，车机校验 commitP_i，不对就 `BYE` 并作废配对码；
+   车 → 手 `PAIR_REVEAL(nC_i)`，手机校验 commitC_i，不对就断开。
+5. 双方算出 LTK。手 → 车 `AUTH_RESPONSE`（用第 1 步的 nonceC），车机校验通过后保存（phoneId → LTK、名称），
+   车 → 手发一条加密的 `NOTICE("paired")`；手机能解开才保存 LTK，然后双方断开。
+   配对模式下最多失败 3 次。
+
+这是蓝牙 LE Secure Connections 的 Passkey Entry 做法：逐位承诺让旁听者拿不到 LTK，
+中间人在配对那一次骗过车机的概率约 2×10⁻⁵。平台 API 里没有 PAKE，这是只用 P-256、HMAC、AES-GCM 能做到的最好方案。
+
+### 加密帧（认证之后，双向）
+
+```
+type u8 · len u32 BE (= 明文长度 + 16) · AES-128-GCM 密文 || tag[16]
+```
+
+- 密钥：手 → 车用 kP2C，车 → 手用 kC2P。
+- nonce：`00 00 00 00 || ctr u64 BE`，每个方向各自从 0 开始、每帧加 1，不随帧发送（TCP 保证顺序）。
+- AAD：这一帧的 5 字节头。
+- 解密失败立刻断开。每个连接的会话密钥都不同，跨连接重放无效。
+
+### iPhone 端的视频
+
+- 广播扩展把屏幕缩放（保持比例、两侧补黑）、按 `RPVideoSampleOrientationKey` 旋转后，编码成车机 `HELLO` 给出的宽高，
+  所以竖屏 iPhone 在横屏车机上居中显示，车机不用做任何适配。
+- H.264 Constrained Baseline（老车机只保证支持 Baseline），画面静止时每 100ms 重发上一帧。
+- 不能反向控制，车机发来的 `TOUCH` / `KEY` / `LAUNCH` 一律忽略。
