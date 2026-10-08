@@ -64,7 +64,8 @@ class AdbStream internal constructor(private val adb: AdbConnection, val localId
 
     internal fun awaitOpen() {
         opened.await()
-        if (closed) throw IOException("手机拒绝打开该服务")
+        // 看 remoteId 而不是 closed：短命令可能在这里醒来前就已经输出完并关闭了
+        if (remoteId == 0) throw IOException("手机拒绝打开该服务")
     }
 
     internal fun onOkay(remote: Int) {
