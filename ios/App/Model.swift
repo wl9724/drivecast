@@ -19,7 +19,7 @@ final class Model: ObservableObject {
     @Published var phase = Phase.idle
     @Published var codeError = ""
 
-    private let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
+    private let browser = NWBrowser(for: .bonjourWithTXTRecord(type: serviceType, domain: nil), using: .tcp) // 不带 TXT 的话 metadata 一直是 .none
     private var link: Link?
     private var client: PairingClient?
     private var carName = ""
@@ -102,6 +102,8 @@ final class Model: ObservableObject {
                     phase = .code
                     read(l) // 等输入时车机也可能超时发 BYE
                 case .paired(let carId, let ltk):
+                    // 记下解析好的地址：扩展里 Bonjour 找不到车机时（如车机连 iPhone 热点）也能直接连
+                    if let ep = l.conn.currentPath?.remoteEndpoint { Store.remember(ep) }
                     l.close()
                     guard Store.savePairing(carId: carId, ltk: ltk, name: carName) else {
                         return phase = .failed("保存配对信息失败（钥匙串不可用）")

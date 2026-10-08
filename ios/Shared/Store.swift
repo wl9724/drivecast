@@ -6,7 +6,10 @@ import Security
 /// App 和广播扩展共享的数据：phoneId 和每台车机的 LTK 放钥匙串（访问组用 App Group），
 /// 其余不保密的设置放 App Group 的 UserDefaults。
 enum Store {
-    static let group = "group.io.github.drivecast"
+    /// AltStore 会把 App Group 改名成 "<group>.<TEAMID>"，并把真名写进 App 和扩展 Info.plist 的 ALTAppGroups。
+    static let group = (Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String])?.first {
+        $0.hasPrefix("group.io.github.drivecast")
+    } ?? "group.io.github.drivecast"
     static let defaults = UserDefaults(suiteName: group) ?? .standard
 
     /// 签名工具把 App Group 改了名或去掉时为 false：扩展读不到 App 里的配对信息。

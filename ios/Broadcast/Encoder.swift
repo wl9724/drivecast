@@ -27,6 +27,7 @@ final class Encoder {
     private var gen = 0         // 每次换连接加一，旧连接的编码输出和发送回调都作废
     private var pending = 0     // 已提交编码、还没发完的帧
     private var keyNext = true
+    private var keyAt = 0.0     // 上次强制关键帧的时间
     private var config: Data?   // 上次发给车机的 SPS/PPS
 
     init?(_ hello: Hello, queue: DispatchQueue, carry: CVPixelBuffer?) {
@@ -90,11 +91,12 @@ final class Encoder {
         guard let pool = VTCompressionSessionGetPixelBufferPool(session) else { return nil }
         var out: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out) == kCVReturnSuccess, let out else { return nil }
-        // ReplayKit 的缓冲一直是竖的，方向在 RPVideoSampleOrientationKey 里。按 ImageIO 的定义 .right 要顺时针转 90° 才正。
-        // ponytail: 旋转方向还没在真机上核对，反了就对调 CW90 / CCW90
+        // ReplayKit 的缓冲一直是竖的，方向在 RPVideoSampleOrientationKey 里。按 WebRTC / LiveKit 的 ReplayKit 实现，
+        // .left 顺时针转 90°、.right 逆时针转 90°（和 ImageIO 的 EXIF 定义相反）。
+        // ponytail: 还没在真机上核对，左右各横屏一个 App 试一下，反了就对调 CW90 / CCW90
         let rotation: CFString? = switch o {
-        case .right: kVTRotation_CW90
-        case .left: kVTRotation_CCW90
+        case .left: kVTRotation_CW90
+        case .right: kVTRotation_CCW90
         case .down: kVTRotation_180
         default: nil
         }
@@ -122,6 +124,9 @@ final class Encoder {
               CACurrentMediaTime() - lastAt >= 0.9 / Double(max(hello.fps, 1)) else { return }
         pending += 1
         lastAt = CACurrentMediaTime()
+        // 低延迟模式是无限 GOP，车机丢一帧就花屏到下个关键帧：和 Android 端一样每 10 秒一个
+        if lastAt - keyAt >= 10 { keyNext = true }
+        if keyNext { keyAt = lastAt }
         let props = keyNext ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         keyNext = false
         let g = gen

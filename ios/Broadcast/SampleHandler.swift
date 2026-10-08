@@ -9,13 +9,14 @@ import ReplayKit
 /// iPhone 不能被反向控制，车机发来的 TOUCH / KEY / LAUNCH 一律忽略。状态都在 q 上。
 class SampleHandler: RPBroadcastSampleHandler {
     private let q = DispatchQueue(label: "drivecast")
-    private let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
+    private let browser = NWBrowser(for: .bonjourWithTXTRecord(type: serviceType, domain: nil), using: .tcp) // 不带 TXT 的话 metadata 一直是 .none
     private let wifi = NWPathMonitor(requiredInterfaceType: .wifi)
     private var phoneId = Data()
     private var link: Link?
     private var channel: SecureChannel? // 认证之后才有
     private var streaming = false       // 这条连接收到 HELLO 之后
     private var encoder: Encoder?
+    private var early: (CVPixelBuffer, CGImagePropertyOrientation)? // 第一次 HELLO 之前的最新一帧（只持有一个 ReplayKit 缓冲），画面静止时也有东西可发
     private var lastHeard = Date()
     private var backoff: TimeInterval = 1
     private var timer: DispatchSourceTimer?
@@ -52,7 +53,7 @@ class SampleHandler: RPBroadcastSampleHandler {
         guard sampleBufferType == .video, let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let o = (CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey as CFString, attachmentModeOut: nil) as? NSNumber)
             .flatMap { CGImagePropertyOrientation(rawValue: $0.uint32Value) } ?? .up
-        q.sync { encoder?.push(px, o) }
+        q.sync { if let e = encoder { e.push(px, o) } else { early = (px, o) } }
     }
 
     override func broadcastFinished() {
@@ -80,6 +81,7 @@ class SampleHandler: RPBroadcastSampleHandler {
         link = nil
         encoder?.stop()
         encoder = nil
+        early = nil
     }
 
     /// 找车的顺序：Bonjour（TXT id 是已配对的车机）→ 上次连上的地址 → Wi-Fi 网关（连车机热点时就是车机）→ 手动地址。
@@ -179,6 +181,8 @@ class SampleHandler: RPBroadcastSampleHandler {
             guard let e = Encoder(h, queue: q, carry: encoder?.last) else { return finish("无法创建 H.264 编码器") }
             encoder?.stop()
             encoder = e
+            if let f = early { e.push(f.0, f.1) }
+            early = nil
         }
         l.send(ch.seal(Msg.helloAck, helloAck())) // displayId = -1：不能反向控制
         streaming = true
