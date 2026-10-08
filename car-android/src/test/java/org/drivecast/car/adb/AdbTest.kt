@@ -15,6 +15,7 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.IOException
 import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -24,25 +25,65 @@ import javax.crypto.Cipher
 
 class AdbTest {
 
-    /** 从字节流读消息的只读通道。 */
-    private open class Replay(bytes: ByteArray) : AdbTransport {
-        private val input = ByteArrayInputStream(bytes)
-        fun hasMore() = input.available() > 0
-        override fun write(data: ByteArray) {}
-        override fun readFully(data: ByteArray) {
-            if (input.read(data) != data.size) throw EOFException()
-        }
-        override fun close() {}
-    }
-
-    /** 按脚本回放手机的消息，记录车机发出的消息。 */
-    private class FakePhone(vararg replies: AdbMessage) : Replay(encode(*replies)) {
+    /**
+     * 模拟手机：脚本里每条回复写成 "车机已发出 n 条消息后" 才送达，
+     * 这样后台读线程不会抢在 open() 登记流之前读到回复。脚本放完后阻塞，直到 close()。
+     */
+    private class FakePhone(private vararg val script: Pair<Int, AdbMessage>) : AdbTransport {
+        private val lock = Object()
         private val output = ByteArrayOutputStream()
-        override fun write(data: ByteArray) = output.write(data)
+        private var pending = ByteArray(0)
+        private var pos = 0
+        private var next = 0
+        private var closed = false
 
-        fun sent(): List<AdbMessage> {
-            val r = Replay(output.toByteArray())
-            return generateSequence { if (r.hasMore()) AdbMessage.read(r) else null }.toList()
+        override fun write(data: ByteArray) = synchronized(lock) {
+            output.write(data)
+            lock.notifyAll()
+        }
+
+        override fun readFully(data: ByteArray) = synchronized(lock) {
+            var off = 0
+            while (off < data.size) {
+                when {
+                    pos < pending.size -> {
+                        val n = minOf(data.size - off, pending.size - pos)
+                        System.arraycopy(pending, pos, data, off, n)
+                        pos += n
+                        off += n
+                    }
+                    next < script.size && sent().size >= script[next].first -> {
+                        pending = encode(script[next++].second)
+                        pos = 0
+                    }
+                    closed -> throw IOException("closed")
+                    else -> lock.wait()
+                }
+            }
+        }
+
+        override fun close() = synchronized(lock) {
+            closed = true
+            lock.notifyAll()
+        }
+
+        /** 车机已完整发出的消息。 */
+        fun sent(): List<AdbMessage> = synchronized(lock) {
+            val input = ByteArrayInputStream(output.toByteArray())
+            val r = object : AdbTransport {
+                override fun write(data: ByteArray) {}
+                override fun readFully(data: ByteArray) {
+                    if (input.read(data) != data.size) throw EOFException()
+                }
+                override fun close() {}
+            }
+            val list = mutableListOf<AdbMessage>()
+            try {
+                while (input.available() > 0) list += AdbMessage.read(r)
+            } catch (_: EOFException) {
+                // 头已写、负载还没写
+            }
+            list
         }
     }
 
@@ -63,31 +104,61 @@ class AdbTest {
     @Test
     fun connectAndShellWithoutAuth() {
         val phone = FakePhone(
-            AdbMessage(CNXN, 0x01000001, 1024 * 1024, "device::ro.product.model=Xiaomi 15 Pro;\u0000".toByteArray()),
-            AdbMessage(OKAY, 7, 1),
-            AdbMessage(WRTE, 7, 1, "hello\n".toByteArray()),
-            AdbMessage(CLSE, 7, 1),
+            1 to AdbMessage(CNXN, 0x01000001, 1024 * 1024, "device::ro.product.model=Xiaomi 15 Pro;\u0000".toByteArray()),
+            2 to AdbMessage(OKAY, 7, 1),
+            2 to AdbMessage(WRTE, 7, 1, "hello\n".toByteArray()),
+            3 to AdbMessage(CLSE, 7, 1),
         )
-        val adb = AdbConnection(phone, AdbKey(keyPair, "test"))
-        assertTrue(adb.connect().startsWith("device::"))
-        assertEquals(AdbConnection.MAX_DATA, adb.maxData)
-        assertEquals("hello\n", adb.shell("echo hello"))
+        AdbConnection(phone, AdbKey(keyPair, "test")).use { adb ->
+            assertTrue(adb.connect().startsWith("device::"))
+            assertEquals(AdbConnection.MAX_DATA, adb.maxData)
+            assertEquals("hello\n", adb.shell("echo hello"))
+        }
 
         val sent = phone.sent()
-        assertEquals(listOf(CNXN, OPEN, OKAY, CLSE), sent.map { it.command })
+        assertEquals(listOf(CNXN, OPEN, OKAY), sent.map { it.command })
         assertEquals("shell:echo hello\u0000", String(sent[1].payload))
         assertEquals(listOf(1, 7), listOf(sent[2].arg0, sent[2].arg1))
-        assertEquals(listOf(1, 7), listOf(sent[3].arg0, sent[3].arg1))
+    }
+
+    @Test
+    fun writeWaitsForOkayAndSplitsByMaxData() {
+        val phone = FakePhone(
+            1 to AdbMessage(CNXN, 0x01000000, 4, "device::\u0000".toByteArray()),
+            2 to AdbMessage(OKAY, 7, 1),
+            3 to AdbMessage(OKAY, 7, 1),
+            4 to AdbMessage(OKAY, 7, 1),
+        )
+        AdbConnection(phone, AdbKey(keyPair, "test")).use { adb ->
+            adb.connect()
+            adb.open("exec:cat").write("0123456789".toByteArray())
+        }
+
+        val writes = phone.sent().filter { it.command == WRTE }
+        assertEquals(listOf("0123", "4567", "89"), writes.map { String(it.payload) })
+        assertTrue(writes.all { it.arg0 == 1 && it.arg1 == 7 })
+    }
+
+    @Test(expected = IOException::class)
+    fun openRejectedThrows() {
+        val phone = FakePhone(
+            1 to AdbMessage(CNXN, 0x01000000, 4096, "device::\u0000".toByteArray()),
+            2 to AdbMessage(CLSE, 0, 1),
+        )
+        AdbConnection(phone, AdbKey(keyPair, "test")).use { adb ->
+            adb.connect()
+            adb.open("exec:nope")
+        }
     }
 
     @Test
     fun signsTokenTheWayAdbdVerifies() {
         val token = ByteArray(20) { it.toByte() }
         val phone = FakePhone(
-            AdbMessage(AUTH, AUTH_TOKEN, 0, token),
-            AdbMessage(CNXN, 0x01000000, 4096, "device::\u0000".toByteArray()),
+            1 to AdbMessage(AUTH, AUTH_TOKEN, 0, token),
+            2 to AdbMessage(CNXN, 0x01000000, 4096, "device::\u0000".toByteArray()),
         )
-        AdbConnection(phone, AdbKey(keyPair, "test")).connect()
+        AdbConnection(phone, AdbKey(keyPair, "test")).use { it.connect() }
 
         val auth = phone.sent()[1]
         assertEquals(listOf(AUTH, AUTH_SIGNATURE), listOf(auth.command, auth.arg0))

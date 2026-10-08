@@ -14,7 +14,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :car-android:testDebugUnitTest :car-android:assembleDebug
+      - run: ./gradlew :protocol:test :car-android:testDebugUnitTest :car-android:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: drivecast-car-debug

@@ -9,14 +9,13 @@ import org.drivecast.car.adb.AdbMessage.Companion.CNXN
 import org.drivecast.car.adb.AdbMessage.Companion.OKAY
 import org.drivecast.car.adb.AdbMessage.Companion.OPEN
 import org.drivecast.car.adb.AdbMessage.Companion.WRTE
-import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 
-/**
- * ADB 主机端连接。
- * ponytail: 同一时间只跑一条流；P1 视频流和控制流并存时再加按 localId 分发的多路复用。
- */
+/** ADB 主机端连接。connect() 后由后台线程收消息，按 localId 分发给各条流。 */
 class AdbConnection(
     private val transport: AdbTransport,
     private val key: AdbKey,
@@ -24,9 +23,11 @@ class AdbConnection(
     private val onAuthPrompt: () -> Unit = {},
 ) : Closeable {
 
+    @Volatile
     var maxData = MAX_DATA
         private set
-    private var nextLocalId = 1
+    private val streams = ConcurrentHashMap<Int, AdbStream>()
+    private val nextLocalId = AtomicInteger(1)
 
     /** 握手并完成认证，返回手机的 banner（如 "device::ro.product.model=..."）。 */
     fun connect(): String {
@@ -37,6 +38,7 @@ class AdbConnection(
             when (m.command) {
                 CNXN -> {
                     maxData = minOf(m.arg1, MAX_DATA)
+                    thread(isDaemon = true, name = "adb-reader") { readLoop() }
                     return String(m.payload, Charsets.UTF_8).trimEnd('\u0000')
                 }
                 AUTH -> {
@@ -55,32 +57,48 @@ class AdbConnection(
         }
     }
 
+    /** 打开一个服务（如 "shell:ls"、"exec:cmd"），手机拒绝时抛 IOException。 */
+    fun open(service: String): AdbStream {
+        val s = AdbStream(this, nextLocalId.getAndIncrement())
+        streams[s.localId] = s
+        send(AdbMessage(OPEN, s.localId, 0, "$service\u0000".toByteArray()))
+        s.awaitOpen()
+        return s
+    }
+
     /** 执行一条 shell 命令，返回全部输出（stdout/stderr 合并）。 */
-    fun shell(command: String): String {
-        val localId = nextLocalId++
-        send(AdbMessage(OPEN, localId, 0, "shell:$command\u0000".toByteArray()))
-        val out = ByteArrayOutputStream()
-        var remoteId = 0
-        while (true) {
-            val m = AdbMessage.read(transport)
-            if (m.arg1 != localId) throw IOException("收到其他流的消息 $m")
-            when (m.command) {
-                OKAY -> remoteId = m.arg0
-                WRTE -> {
-                    out.write(m.payload)
-                    send(AdbMessage(OKAY, localId, m.arg0))
+    fun shell(command: String): String =
+        open("shell:$command").use { String(it.input.readBytes(), Charsets.UTF_8) }
+
+    private fun readLoop() {
+        try {
+            while (true) {
+                val m = AdbMessage.read(transport)
+                val s = streams[m.arg1] ?: continue
+                when (m.command) {
+                    OKAY -> s.onOkay(m.arg0)
+                    WRTE -> {
+                        s.onData(m.payload)
+                        send(AdbMessage(OKAY, s.localId, m.arg0))
+                    }
+                    CLSE -> {
+                        streams.remove(s.localId)
+                        s.onRemoteClose()
+                    }
                 }
-                CLSE -> {
-                    if (remoteId == 0) throw IOException("手机拒绝打开 shell")
-                    send(AdbMessage(CLSE, localId, remoteId))
-                    return String(out.toByteArray(), Charsets.UTF_8)
-                }
-                else -> throw IOException("意外消息 $m")
             }
+        } catch (_: IOException) {
+            // 断开或 close()：下面统一通知各条流
+        } finally {
+            streams.values.forEach { it.onRemoteClose() }
+            streams.clear()
         }
     }
 
-    private fun send(m: AdbMessage) {
+    internal fun forget(localId: Int) = streams.remove(localId)
+
+    @Synchronized
+    internal fun send(m: AdbMessage) {
         transport.write(m.header())
         if (m.payload.isNotEmpty()) transport.write(m.payload)
     }

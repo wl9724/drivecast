@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "drivecast"
-include(":car-android")
+include(":protocol", ":car-android", ":phone-server")

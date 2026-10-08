@@ -1,0 +1,1 @@
+-keep class org.drivecast.server.Server { public static void main(java.lang.String[]); }

@@ -5,7 +5,8 @@
 
     <application
         android:label="DriveCast"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
         <activity
             android:name=".MainActivity"
             android:exported="true">
