@@ -1,0 +1,35 @@
+name: iOS
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: swift test --package-path ios/Core
+      - run: xcodegen generate --spec ios/project.yml
+      - name: Build unsigned
+        run: |
+          xcodebuild -project ios/DriveCast.xcodeproj -scheme DriveCast -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/DriveCast.app Payload/
+          # ad-hoc 签名带上 App Group：AltStore / Sideloadly 按签名里的 entitlements 申请，没有就装出来没有 App Group
+          ext=Payload/DriveCast.app/PlugIns/DriveCastBroadcast.appex
+          codesign -f -s - --entitlements ios/Broadcast/DriveCastBroadcast.entitlements "$ext"
+          codesign -f -s - --entitlements ios/App/DriveCast.entitlements Payload/DriveCast.app
+          for b in "$ext" Payload/DriveCast.app; do
+            codesign -d --entitlements - "$b" | grep -q application-groups || { echo "$b 没有 App Group"; exit 1; }
+          done
+          zip -qry DriveCast-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DriveCast-unsigned-ipa
+          path: DriveCast-unsigned.ipa

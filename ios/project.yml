@@ -1,0 +1,58 @@
+# XcodeGen：xcodegen generate --spec ios/project.yml，生成 ios/DriveCast.xcodeproj（不入库）
+name: DriveCast
+options:
+  bundleIdPrefix: io.github.drivecast
+  deploymentTarget:
+    iOS: "16.0" # VTPixelTransferSession / VTPixelRotationSession 要 iOS 16
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+packages:
+  DriveCastCore:
+    path: Core
+targets:
+  DriveCast:
+    type: application
+    platform: iOS
+    sources: [App, Shared]
+    dependencies:
+      - target: DriveCastBroadcast # 自动嵌入 PlugIns/
+      - package: DriveCastCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: DriveCast
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # 本地网络权限只写在 App 里，扩展继承 App 的授权（TN3179）
+        NSLocalNetworkUsageDescription: DriveCast 要在局域网里找到车机，并把屏幕画面发给它。
+        NSBonjourServices: [_drivecast._tcp]
+    entitlements:
+      path: App/DriveCast.entitlements
+      properties:
+        com.apple.security.application-groups: [group.io.github.drivecast]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.drivecast.app
+    scheme: {}
+  DriveCastBroadcast:
+    type: app-extension
+    platform: iOS
+    sources: [Broadcast, Shared]
+    dependencies:
+      - package: DriveCastCore
+    info:
+      path: Broadcast/Info.plist
+      properties:
+        CFBundleDisplayName: DriveCast
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer # 直接放在 NSExtension 下，放进 NSExtensionAttributes 会被 App Store 拒
+    entitlements:
+      path: Broadcast/DriveCastBroadcast.entitlements
+      properties:
+        com.apple.security.application-groups: [group.io.github.drivecast]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.drivecast.app.broadcast

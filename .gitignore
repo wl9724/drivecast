@@ -4,3 +4,11 @@ build/
 local.properties
 .idea/
 *.iml
+# iOS：XcodeGen 生成的文件
+ios/DriveCast.xcodeproj/
+ios/App/Info.plist
+ios/App/DriveCast.entitlements
+ios/Broadcast/Info.plist
+ios/Broadcast/DriveCastBroadcast.entitlements
+.build/
+.swiftpm/
