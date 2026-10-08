@@ -16,6 +16,15 @@ object Msg {
     const val KEY = 0x21
     const val LAUNCH = 0x31
     const val PING = 0x40
+
+    // iPhone 的认证和配对，握手阶段明文
+    const val AUTH_CHALLENGE = 0x50
+    const val AUTH_RESPONSE = 0x51
+    const val PAIR_START = 0x52
+    const val PAIR_KEY = 0x53
+    const val PAIR_COMMIT = 0x54
+    const val PAIR_REVEAL = 0x55
+
     const val NOTICE = 0x7E
     const val BYE = 0x7F
 }
@@ -40,10 +49,11 @@ class Frame(val type: Int, val payload: ByteArray)
 fun encodeFrame(type: Int, payload: ByteArray = ByteArray(0)): ByteArray =
     ByteBuffer.allocate(5 + payload.size).put(type.toByte()).putInt(payload.size).put(payload).array()
 
-fun DataInputStream.readFrame(): Frame {
+/** [max]：认证之前的帧都很小，别让陌生人一个长度字段就让车机分配 8MB。 */
+fun DataInputStream.readFrame(max: Int = MAX_PAYLOAD): Frame {
     val type = readUnsignedByte()
     val len = readInt()
-    if (len !in 0..MAX_PAYLOAD) throw IOException("帧长度异常：$len")
+    if (len !in 0..max) throw IOException("帧长度异常：$len")
     return Frame(type, ByteArray(len).also(::readFully))
 }
 

@@ -20,15 +20,20 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbKey
 import org.drivecast.car.adb.UsbTransport
+import org.drivecast.car.iphone.IphoneServer
+import org.drivecast.car.iphone.PairingMode
+import org.drivecast.car.iphone.SecureLink
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
+import java.io.Closeable
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -36,12 +41,16 @@ import kotlin.concurrent.thread
 /**
  * 左侧一列按钮，右侧是手机虚拟屏的画面。
  * 画面在的时候后台线程一直尝试连接：插着线且有权限就走 USB，否则开了无线就在局域网里找手机。
+ * iPhone 反过来由它主动连车机，认证通过后顶替当前的投屏。
  */
 class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private lateinit var screen: SurfaceView
     private lateinit var status: TextView
     private lateinit var pauseButton: Button
+    private lateinit var pairingView: TextView
+    private val pairing = PairingMode(onChange = { runOnUiThread(::showPairing) })
+    private var iphoneServer: IphoneServer? = null
     private val usb by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
     private val prefs by lazy { Prefs(this) }
     private val key by lazy { AdbKey.loadOrCreate(filesDir, "drivecast@${Build.MODEL}") }
@@ -67,6 +76,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile
     private var worker: Thread? = null
 
+    /** 认证通过、等连接线程接手的 iPhone。 */
+    @Volatile
+    private var iphone: SecureLink? = null
+
     /** 同一台设备只主动弹一次权限框；点"断开"再点"连接"会清掉，重新弹。 */
     @Volatile
     private var askedPermissionFor: String? = null
@@ -75,7 +88,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile
     private var permissionAnswered = false
 
-    /** worker / session / adb 的发布和检查放在一把锁里：旧线程不能覆盖新会话的状态。 */
+    /** worker / session / adb / iphone 的发布和检查放在一把锁里：旧线程不能覆盖新会话的状态。 */
     private val lock = Any()
 
     /**
@@ -105,17 +118,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             addView(button("开启无线") { background { enableWireless() } })
             addView(button("关闭无线") { background { disableWireless() } })
             addView(pauseButton)
+            addView(button("添加 iPhone") { addIphone() })
+            addView(button("清除 iPhone 配对") { clearIphones() })
             addView(status)
         }
         screen = SurfaceView(this).apply {
             setOnTouchListener(::onScreenTouch)
             holder.addCallback(this@MainActivity)
         }
+        pairingView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(0xE6000000.toInt())
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setOnClickListener { pairing.close() }
+        }
         setContentView(LinearLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             addView(ScrollView(context).apply { addView(side) }, LinearLayout.LayoutParams(dp(150), LinearLayout.LayoutParams.MATCH_PARENT))
-            addView(screen, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            addView(FrameLayout(context).apply {
+                addView(screen)
+                addView(pairingView)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         })
+        iphoneServer = try {
+            IphoneServer(this, prefs, pairing, ::log, ::onIphone)
+        } catch (e: Exception) {
+            log("iPhone 服务启动失败：${e.message ?: e}")
+            null
+        }
 
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -131,6 +162,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onDestroy() {
         unregisterReceiver(permissionReceiver)
+        iphoneServer?.close()
         stopWorker()
         super.onDestroy()
     }
@@ -155,13 +187,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun stopWorker() {
-        val (s, c) = synchronized(lock) {
+        val closing = synchronized(lock) {
             worker?.interrupt()
             worker = null
-            session to adb
+            listOfNotNull(session, adb, iphone).also { iphone = null }
         }
-        s?.let { runCatching { it.close() } }
-        c?.let { runCatching { it.close() } }
+        closing.forEach { runCatching { it.close() } }
     }
 
     /** 等待中的连接线程立刻重试。投屏中的不受影响：无线切换时 USB 会重新枚举、再触发一次插入。 */
@@ -170,13 +201,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun runLoop() {
         val me = Thread.currentThread()
         while (worker === me) {
-            if (!paused) {
-                try {
-                    connectOnce(me)
-                } catch (_: InterruptedException) {
-                } catch (e: Exception) {
-                    log("已断开：${e.message ?: e}")
-                }
+            try {
+                val phone = synchronized(lock) { iphone.also { iphone = null } }
+                if (phone != null) play(me, phone, null)
+                else if (!paused) connectOnce(me)
+            } catch (_: InterruptedException) {
+            } catch (e: Exception) {
+                log("已断开：${e.message ?: e}")
             }
             if (worker !== me) break
             try {
@@ -188,9 +219,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun connectOnce(me: Thread) {
-        val t = target ?: return
+        if (target == null) return
         val device = usb.deviceList.values.firstOrNull { UsbTransport.findAdbInterface(it) != null }
-        if (device != null && usb.hasPermission(device)) return cast(me, t, connectUsb(device), viaUsb = true)
+        if (device != null && usb.hasPermission(device)) return cast(me, connectUsb(device), viaUsb = true)
 
         var finder: PhoneFinder? = null
         if (prefs.wireless) {
@@ -200,7 +231,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (found != null) {
                 prefs.phoneIps = listOf(found.host) + prefs.phoneIps
                 log("已无线连接 ${model(found.banner)}")
-                return cast(me, t, found.adb, viaUsb = false)
+                return cast(me, found.adb, viaUsb = false)
             }
         }
 
@@ -232,26 +263,84 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         return c
     }
 
-    private fun cast(me: Thread, t: Target, c: AdbConnection, viaUsb: Boolean) {
-        var s: CastSession? = null
+    private fun cast(me: Thread, c: AdbConnection, viaUsb: Boolean) {
         try {
-            s = CastSession(c, t.surface, t.hello, ::log)
-            // 检查和发布在同一把锁里：要么 stopWorker / 断开 看到这个会话并关掉它，要么这里看到标记退出
             synchronized(lock) {
-                if (worker !== me || paused) return
+                if (!mayCast(me)) return
                 this.viaUsb = viaUsb
                 adb = c
-                session = s
             }
-            s.run(serverApk, APPS.first().second)
+            play(me, AdbLink(c, serverApk, ::log), APPS.first().second)
         } finally {
-            s?.let { runCatching { it.close() } }
-            synchronized(lock) {
-                if (session === s) session = null
-                if (adb === c) adb = null
-            }
+            synchronized(lock) { if (adb === c) adb = null }
             c.close()
         }
+    }
+
+    /** 在当前画面上跑一次投屏，直到断开。 */
+    private fun play(me: Thread, link: FrameLink, firstApp: String?) {
+        val t = target ?: return link.close()
+        val s = CastSession(link, t.surface, t.hello, ::log)
+        try {
+            // 检查和发布在同一把锁里：要么 stopWorker / 断开 / iPhone 顶替 看到这个会话并关掉它，要么这里看到标记退出
+            synchronized(lock) {
+                if (!mayCast(me)) return
+                session = s
+            }
+            s.run(firstApp)
+        } finally {
+            runCatching { s.close() }
+            synchronized(lock) { if (session === s) session = null }
+        }
+    }
+
+    /** 在 lock 里调用。有 iPhone 在等就让路：它已经通过认证，优先。 */
+    private fun mayCast(me: Thread) = worker === me && !paused && iphone == null
+
+    /**
+     * 认证通过的 iPhone 顶替当前投屏：关掉当前会话，让连接线程接手。
+     * 陌生人过不了认证，挤不掉正在用的投屏。没有画面（App 在后台）或点了"断开"时不接。
+     */
+    private fun onIphone(link: SecureLink) {
+        val closing: List<Closeable> = synchronized(lock) {
+            if (worker == null || paused) listOf(link)
+            else listOfNotNull(iphone, session, adb).also { iphone = link }
+        }
+        closing.forEach { runCatching { it.close() } }
+        wake()
+    }
+
+    private fun addIphone() {
+        if (iphoneServer == null) return log("iPhone 服务没有启动")
+        pairing.open()
+        pairingView.postDelayed(::showPairing, PairingMode.WINDOW_MS + 500) // 到期后收起
+        log("配对模式已打开 2 分钟。车机地址：${addresses().joinToString(" ")}")
+    }
+
+    /** 配对模式下盖在画面上：等 iPhone 时显示车机地址（Bonjour 不通时手动输入），开始配对后显示配对码。 */
+    private fun showPairing() {
+        val code = pairing.code
+        pairingView.visibility = if (code != null || pairing.active) View.VISIBLE else View.GONE
+        if (code != null) {
+            pairingView.textSize = 64f
+            pairingView.text = "配对码\n%06d".format(code)
+        } else if (pairing.active) {
+            pairingView.textSize = 24f
+            pairingView.text = "在 iPhone 的 DriveCast 里添加车机\n\n找不到车机时手动输入：\n" +
+                addresses().joinToString("\n") + "\n\n（点这里取消）"
+        }
+    }
+
+    private fun addresses() = IphoneServer.addresses().map { "$it:${iphoneServer?.port}" }
+
+    private fun clearIphones() {
+        prefs.clearIphones()
+        // 正在投屏的 iPhone 也不再信任
+        val closing = synchronized(lock) {
+            listOfNotNull(iphone, session?.takeIf { it.link is SecureLink }).also { iphone = null }
+        }
+        closing.forEach { runCatching { it.close() } }
+        log("已清除所有 iPhone 的配对")
     }
 
     private fun enableWireless() {

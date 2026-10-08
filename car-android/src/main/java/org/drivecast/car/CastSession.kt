@@ -6,6 +6,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbStream
+import org.drivecast.protocol.Frame
 import org.drivecast.protocol.HEARTBEAT_MS
 import org.drivecast.protocol.Hello
 import org.drivecast.protocol.HelloAck
@@ -26,38 +27,85 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/** 一次投屏：推送并启动手机端服务，收视频解码到 [surface]，把触摸和按键发回手机。 */
-class CastSession(
-    private val adb: AdbConnection,
-    private val surface: Surface,
-    private val hello: Hello,
-    private val log: (String) -> Unit,
-) : Closeable {
-    private lateinit var process: AdbStream
-    private lateinit var stream: AdbStream
-    private val pendingMove = AtomicReference<Touch?>(null)
-    private val sender = Executors.newSingleThreadScheduledExecutor()
-    private var decoder: MediaCodec? = null
+/** 投屏会话跑在上面的帧通道：安卓手机是 ADB 流上的明文帧，iPhone 是 TCP 上的加密帧。 */
+interface FrameLink : Closeable {
+    /** 只在会话线程上调用。 */
+    fun read(): Frame
 
-    /** 阻塞运行直到断开，在后台线程调用。 */
-    fun run(serverApk: ByteArray, firstApp: String) {
-        push(serverApk)
+    /** 只在发送线程上调用：一帧一次 write，帧之间不交错，加密帧的计数器也按这个顺序走。 */
+    fun write(type: Int, payload: ByteArray)
+}
+
+/** 安卓手机：推送并启动手机端服务，协议跑在 localabstract socket 上（明文帧）。 */
+class AdbLink(adb: AdbConnection, serverApk: ByteArray, log: (String) -> Unit) : FrameLink {
+    private val process: AdbStream
+    private val stream: AdbStream
+    private val input: DataInputStream
+
+    init {
+        push(adb, serverApk, log)
         // 服务进程挂在这条 exec 流上：关掉它手机端就退出。它只用来等"已就绪"，
         // 协议走 localabstract socket（exec: 是 PTY，每次往返只能搬约 4KB，Wi-Fi 下太慢）
         process = adb.open("exec:CLASSPATH=$REMOTE_PATH app_process / org.drivecast.server.Server 2>/dev/null")
         process.input.skipToMagic()
         stream = adb.open("localabstract:$SOCKET_NAME")
-        send(Msg.HELLO, hello.encode())
-        launch(firstApp)
-        sender.scheduleWithFixedDelay({ write(Msg.PING, ByteArray(0)) }, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS)
-
-        val input = DataInputStream(BufferedInputStream(stream.input, 1 shl 16))
-        input.skipToMagic()
+        input = DataInputStream(BufferedInputStream(stream.input, 1 shl 16))
+        input.skipToMagic() // 手机端 accept 后先发魔数再等 HELLO
         log("手机端已启动")
+    }
+
+    override fun read() = input.readFrame()
+
+    override fun write(type: Int, payload: ByteArray) = stream.write(encodeFrame(type, payload))
+
+    override fun close() {
+        stream.close()
+        process.close()
+    }
+
+    private companion object {
+        const val REMOTE_PATH = "/data/local/tmp/drivecast-server.apk"
+
+        /** 手机端是 shell 身份运行的 APK，每次连接都推一遍，保证和车机端版本一致。 */
+        fun push(adb: AdbConnection, apk: ByteArray, log: (String) -> Unit) {
+            val reply = adb.open("exec:head -c ${apk.size} > $REMOTE_PATH").use {
+                it.write(apk)
+                // head 读满后退出，手机关闭这条流；这期间收到的任何输出都是错误信息
+                String(it.input.readBytes(), Charsets.UTF_8).trim()
+            }
+            if (reply.isNotEmpty()) throw IOException("推送手机端服务失败：$reply")
+            log("已推送手机端服务（${apk.size / 1024} KB）")
+        }
+    }
+}
+
+/** 一次投屏：收视频解码到 [surface]，把触摸和按键发回手机。 */
+class CastSession(
+    val link: FrameLink,
+    private val surface: Surface,
+    private val hello: Hello,
+    private val log: (String) -> Unit,
+) : Closeable {
+    private val pendingMove = AtomicReference<Touch?>(null)
+    private val sender = Executors.newSingleThreadScheduledExecutor()
+    private var decoder: MediaCodec? = null
+
+    /** 能反向控制：安卓手机回 HELLO_ACK 时虚拟屏已建好；iPhone 回 displayId = -1，触摸和按键都不发。 */
+    @Volatile
+    private var control = false
+
+    /** 阻塞运行直到断开，在后台线程调用。[firstApp] 是安卓手机连上后先打开的应用。 */
+    fun run(firstApp: String?) {
+        send(Msg.HELLO, hello.encode())
+        firstApp?.let { send(Msg.LAUNCH, it.toByteArray(Charsets.UTF_8)) }
+        sender.scheduleWithFixedDelay({ write(Msg.PING, ByteArray(0)) }, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS)
         while (true) {
-            val f = input.readFrame()
+            val f = link.read()
             when (f.type) {
-                Msg.HELLO_ACK -> log("虚拟屏 ${HelloAck.decode(f.payload).displayId} 已创建")
+                Msg.HELLO_ACK -> HelloAck.decode(f.payload).displayId.let {
+                    control = it >= 0
+                    log(if (control) "虚拟屏 $it 已创建" else "iPhone 已连接（只能显示，不能在车机上操作）")
+                }
                 Msg.VIDEO_CONFIG -> startDecoder(VideoConfig.decode(f.payload))
                 Msg.VIDEO_FRAME -> decode(VideoFrame.decode(f.payload))
                 Msg.NOTICE -> log(String(f.payload, Charsets.UTF_8))
@@ -71,28 +119,20 @@ class CastSession(
      * 拖地图跟不上手指。只保留最新的一个，按下/抬起照常按顺序发。
      */
     fun touch(action: Int, x: Int, y: Int) {
+        if (!control) return
         if (action != MotionEvent.ACTION_MOVE) return send(Msg.TOUCH, Touch(action, x, y).encode())
-        if (!::stream.isInitialized) return
         if (pendingMove.getAndSet(Touch(action, x, y)) != null) return // 已有一个在排队，替换掉即可
         runCatching { sender.execute { pendingMove.getAndSet(null)?.let { write(Msg.TOUCH, it.encode()) } } }
     }
 
     fun key(keycode: Int) {
+        if (!control) return
         send(Msg.KEY, Key(0, keycode).encode())
         send(Msg.KEY, Key(1, keycode).encode())
     }
 
-    fun launch(pkg: String) = send(Msg.LAUNCH, pkg.toByteArray(Charsets.UTF_8))
-
-    /** 手机端是 shell 身份运行的 APK，每次连接都推一遍，保证和车机端版本一致。 */
-    private fun push(apk: ByteArray) {
-        val reply = adb.open("exec:head -c ${apk.size} > $REMOTE_PATH").use {
-            it.write(apk)
-            // head 读满后退出，手机关闭这条流；这期间收到的任何输出都是错误信息
-            String(it.input.readBytes(), Charsets.UTF_8).trim()
-        }
-        if (reply.isNotEmpty()) throw IOException("推送手机端服务失败：$reply")
-        log("已推送手机端服务（${apk.size / 1024} KB）")
+    fun launch(pkg: String) {
+        if (control) send(Msg.LAUNCH, pkg.toByteArray(Charsets.UTF_8))
     }
 
     private fun startDecoder(c: VideoConfig) {
@@ -129,24 +169,17 @@ class CastSession(
     }
 
     private fun send(type: Int, payload: ByteArray) {
-        if (!::stream.isInitialized) return
         runCatching { sender.execute { write(type, payload) } } // 关闭后提交会被拒绝，忽略
     }
 
     /** 只在 sender 线程上调用，保证一帧一次 write、帧之间不交错。 */
     private fun write(type: Int, payload: ByteArray) {
-        runCatching { stream.write(encodeFrame(type, payload)) }
+        runCatching { link.write(type, payload) }
     }
 
     override fun close() {
         sender.shutdownNow()
-        if (::stream.isInitialized) stream.close()
-        if (::process.isInitialized) process.close()
+        runCatching { link.close() }
         runCatching { decoder?.release() }
-        adb.close()
-    }
-
-    private companion object {
-        const val REMOTE_PATH = "/data/local/tmp/drivecast-server.apk"
     }
 }
