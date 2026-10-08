@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  car-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :car-android:testDebugUnitTest :car-android:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivecast-car-debug
+          path: car-android/build/outputs/apk/debug/*.apk
