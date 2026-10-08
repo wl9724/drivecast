@@ -15,7 +15,7 @@ object WirelessAdb {
     fun enable(adb: AdbConnection): List<String> {
         val ips = parseIps(adb.shell("ip -4 -o addr show"))
         // 已经开着就别再开：tcpip: 无论端口变没变都会重启 adbd
-        if (adb.shell("getprop service.adb.tcp.port").trim() != TcpTransport.PORT.toString()) {
+        if (tcpPort(adb) != TcpTransport.PORT.toString()) {
             val reply = readAll(adb, "tcpip:${TcpTransport.PORT}")
             if ("invalid" in reply) throw IOException("手机拒绝开启无线调试：${reply.trim()}")
         }
@@ -24,9 +24,15 @@ object WirelessAdb {
 
     /** 让 adbd 回到只走 USB。同样会重启 adbd、断开当前连接，所以本来就没开时什么都不做。 */
     fun disable(adb: AdbConnection) {
-        val port = adb.shell("getprop service.adb.tcp.port").trim()
+        val port = tcpPort(adb)
         if (port.isEmpty() || port == "0") return
         readAll(adb, "usb:")
+    }
+
+    /** adbd 实际监听的端口：service.adb.tcp.port 为空时它会用 persist.adb.tcp.port。 */
+    private fun tcpPort(adb: AdbConnection): String {
+        val port = adb.shell("getprop service.adb.tcp.port").trim()
+        return port.ifEmpty { adb.shell("getprop persist.adb.tcp.port").trim() }
     }
 
     /** adbd 写完回复就退出，回复和 CLSE 都可能丢，连接直接断开也算成功。 */

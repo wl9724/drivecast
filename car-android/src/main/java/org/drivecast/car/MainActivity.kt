@@ -71,6 +71,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile
     private var askedPermissionFor: String? = null
 
+    /** 权限框已经有结果（允许或拒绝）。没结果前一直提示"请允许"，不提示"没有权限"。 */
+    @Volatile
+    private var permissionAnswered = false
+
+    /** worker / session / adb 的发布和检查放在一把锁里：旧线程不能覆盖新会话的状态。 */
+    private val lock = Any()
+
     /**
      * 唤醒等待中的连接线程。不用 interrupt：中断标记会留到之后的阻塞调用里，
      * 把刚建好的连接打断。interrupt 只用来停掉线程。
@@ -78,7 +85,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private val wakeup = Semaphore(0)
 
     private val permissionReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) = wake()
+        override fun onReceive(context: Context, intent: Intent) {
+            permissionAnswered = true
+            wake()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,7 +143,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         target = Target(holder.surface, hello)
         // 尺寸变了要按新尺寸重建虚拟屏
         stopWorker()
-        worker = thread(name = "connect") { runLoop() }
+        // 先登记再启动：否则新线程可能在 worker 赋值前检查 worker === me，直接退出
+        val t = thread(start = false, name = "connect") { runLoop() }
+        synchronized(lock) { worker = t }
+        t.start()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -142,11 +155,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun stopWorker() {
-        val t = worker
-        worker = null
-        t?.interrupt()
-        session?.let { runCatching { it.close() } }
-        adb?.let { runCatching { it.close() } }
+        val (s, c) = synchronized(lock) {
+            worker?.interrupt()
+            worker = null
+            session to adb
+        }
+        s?.let { runCatching { it.close() } }
+        c?.let { runCatching { it.close() } }
     }
 
     /** 等待中的连接线程立刻重试。投屏中的不受影响：无线切换时 USB 会重新枚举、再触发一次插入。 */
@@ -192,9 +207,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         when {
             device != null && askedPermissionFor != device.deviceName -> {
                 askedPermissionFor = device.deviceName
+                permissionAnswered = false
                 requestPermission(device)
                 log("请在车机上允许 DriveCast 访问手机")
             }
+            device != null && !permissionAnswered -> log("请在车机上允许 DriveCast 访问手机")
             device != null -> log("没有 USB 权限：点\"断开\"再点\"连接\"重新申请，或重新插拔数据线")
             finder?.unauthorized == true -> log("手机不再信任这台车机（7 天没连或没勾\"一律允许\"）：请插线连接一次")
             prefs.wireless -> log("没找到手机：确认车机和手机连在同一个 Wi-Fi 或热点上。手机重启后需要插一次线")
@@ -218,17 +235,21 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun cast(me: Thread, t: Target, c: AdbConnection, viaUsb: Boolean) {
         var s: CastSession? = null
         try {
-            this.viaUsb = viaUsb
-            adb = c
             s = CastSession(c, t.surface, t.hello, ::log)
-            session = s
-            // 先发布再检查：要么 stopWorker / 断开 看到这个 session 并关掉它，要么这里看到标记退出
-            if (worker !== me || paused) return
+            // 检查和发布在同一把锁里：要么 stopWorker / 断开 看到这个会话并关掉它，要么这里看到标记退出
+            synchronized(lock) {
+                if (worker !== me || paused) return
+                this.viaUsb = viaUsb
+                adb = c
+                session = s
+            }
             s.run(serverApk, APPS.first().second)
         } finally {
             s?.let { runCatching { it.close() } }
-            if (session === s) session = null
-            if (adb === c) adb = null
+            synchronized(lock) {
+                if (session === s) session = null
+                if (adb === c) adb = null
+            }
             c.close()
         }
     }
@@ -260,10 +281,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun togglePause() {
-        paused = !paused
+        val s = synchronized(lock) {
+            paused = !paused
+            if (paused) session else null
+        }
         pauseButton.text = if (paused) "连接" else "断开"
         if (paused) {
-            session?.let { runCatching { it.close() } }
+            s?.let { runCatching { it.close() } }
             log("已断开")
         } else {
             askedPermissionFor = null

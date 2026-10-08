@@ -16,10 +16,14 @@ object Msg {
     const val KEY = 0x21
     const val LAUNCH = 0x31
     const val PING = 0x40
+    const val NOTICE = 0x7E
     const val BYE = 0x7F
 }
 
 const val VERSION = 1
+
+/** 安卓手机端服务监听的抽象 Unix socket 名，车机通过 ADB 的 `localabstract:` 连接。 */
+const val SOCKET_NAME = "drivecast"
 
 /** 手机端启动后先输出这 4 字节，车机跳过它之前的杂散输出（如 linker 警告）。 */
 val MAGIC = "DCv1".toByteArray(Charsets.US_ASCII)

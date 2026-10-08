@@ -2,6 +2,7 @@ package org.drivecast.car
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.view.MotionEvent
 import android.view.Surface
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbStream
@@ -10,6 +11,7 @@ import org.drivecast.protocol.Hello
 import org.drivecast.protocol.HelloAck
 import org.drivecast.protocol.Key
 import org.drivecast.protocol.Msg
+import org.drivecast.protocol.SOCKET_NAME
 import org.drivecast.protocol.Touch
 import org.drivecast.protocol.VideoConfig
 import org.drivecast.protocol.VideoFrame
@@ -22,6 +24,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** 一次投屏：推送并启动手机端服务，收视频解码到 [surface]，把触摸和按键发回手机。 */
 class CastSession(
@@ -30,15 +33,20 @@ class CastSession(
     private val hello: Hello,
     private val log: (String) -> Unit,
 ) : Closeable {
+    private lateinit var process: AdbStream
     private lateinit var stream: AdbStream
+    private val pendingMove = AtomicReference<Touch?>(null)
     private val sender = Executors.newSingleThreadScheduledExecutor()
     private var decoder: MediaCodec? = null
 
     /** 阻塞运行直到断开，在后台线程调用。 */
     fun run(serverApk: ByteArray, firstApp: String) {
         push(serverApk)
-        // 2>/dev/null：exec: 的 stderr 和 stdout 混在同一个 PTY 里，会破坏二进制帧
-        stream = adb.open("exec:CLASSPATH=$REMOTE_PATH app_process / org.drivecast.server.Server 2>/dev/null")
+        // 服务进程挂在这条 exec 流上：关掉它手机端就退出。它只用来等"已就绪"，
+        // 协议走 localabstract socket（exec: 是 PTY，每次往返只能搬约 4KB，Wi-Fi 下太慢）
+        process = adb.open("exec:CLASSPATH=$REMOTE_PATH app_process / org.drivecast.server.Server 2>/dev/null")
+        process.input.skipToMagic()
+        stream = adb.open("localabstract:$SOCKET_NAME")
         send(Msg.HELLO, hello.encode())
         launch(firstApp)
         sender.scheduleWithFixedDelay({ write(Msg.PING, ByteArray(0)) }, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS)
@@ -52,12 +60,22 @@ class CastSession(
                 Msg.HELLO_ACK -> log("虚拟屏 ${HelloAck.decode(f.payload).displayId} 已创建")
                 Msg.VIDEO_CONFIG -> startDecoder(VideoConfig.decode(f.payload))
                 Msg.VIDEO_FRAME -> decode(VideoFrame.decode(f.payload))
+                Msg.NOTICE -> log(String(f.payload, Charsets.UTF_8))
                 Msg.BYE -> throw IOException("手机端退出：${String(f.payload, Charsets.UTF_8)}")
             }
         }
     }
 
-    fun touch(action: Int, x: Int, y: Int) = send(Msg.TOUCH, Touch(action, x, y).encode())
+    /**
+     * 移动事件合并发送：无线时每帧都要等一次往返，60~120Hz 的 MOVE 逐个发会越积越多，
+     * 拖地图跟不上手指。只保留最新的一个，按下/抬起照常按顺序发。
+     */
+    fun touch(action: Int, x: Int, y: Int) {
+        if (action != MotionEvent.ACTION_MOVE) return send(Msg.TOUCH, Touch(action, x, y).encode())
+        if (!::stream.isInitialized) return
+        if (pendingMove.getAndSet(Touch(action, x, y)) != null) return // 已有一个在排队，替换掉即可
+        runCatching { sender.execute { pendingMove.getAndSet(null)?.let { write(Msg.TOUCH, it.encode()) } } }
+    }
 
     fun key(keycode: Int) {
         send(Msg.KEY, Key(0, keycode).encode())
@@ -123,6 +141,7 @@ class CastSession(
     override fun close() {
         sender.shutdownNow()
         if (::stream.isInitialized) stream.close()
+        if (::process.isInitialized) process.close()
         runCatching { decoder?.release() }
         adb.close()
     }

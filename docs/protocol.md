@@ -19,10 +19,13 @@
 车机通过 ADB（USB，或手机执行过 `tcpip:5555` 后的 TCP）把手机端服务推到
 `/data/local/tmp/drivecast-server.apk`（`exec:head -c <字节数> > 路径`），再打开流
 `exec:CLASSPATH=/data/local/tmp/drivecast-server.apk app_process / org.drivecast.server.Server 2>/dev/null`。
-这条流的 stdin/stdout 就是协议通道（v1 不需要端口转发，也不需要多条流）。
-adbd 给 `exec:` 分配的是 raw 模式的 PTY，二进制安全，但 stderr 会混进同一个流，所以要重定向掉。
+手机端监听抽象 Unix socket `drivecast` 后在这条流上输出魔数 `DCv1`，车机随即打开 `localabstract:drivecast`，
+**协议跑在这个 socket 上**。exec 流保持打开，只用来维持进程：车机关闭它，手机端就退出。
 
-手机端启动后先输出 4 字节魔数 `DCv1`，车机跳过魔数之前的任何杂散输出。
+不直接用 exec 流的 stdin/stdout：adbd 给 `exec:` 分配的是 raw 模式 PTY，每次 WRTE 往返只能搬约 4KB，
+Wi-Fi 下（往返 10~20ms）吞吐低于视频码率；stderr 也会混进 PTY。
+
+协议 socket 上，发送端（手机）也先输出魔数 `DCv1`，接收端跳过魔数之前的任何杂散数据。
 
 ## 消息
 
@@ -38,6 +41,7 @@ adbd 给 `exec:` 分配的是 raw 模式的 PTY，二进制安全，但 stderr �
 | `0x30` | APP_LIST | 双向 | 预留，未实现 |
 | `0x31` | LAUNCH | 车 → 手 | 包名（UTF-8），在虚拟屏上启动其桌面入口 |
 | `0x40` | PING | 车 → 手 | 空。车机每秒发一次 |
+| `0x7E` | NOTICE | 手 → 车 | 给用户看的提示（UTF-8），不中断投屏。例如手机不允许模拟点击 |
 | `0x7F` | BYE | 双向 | 原因（UTF-8 文本） |
 
 - 宽高由车机按自己的画面区域给出，取 16 的倍数。
@@ -50,7 +54,7 @@ adbd 给 `exec:` 分配的是 raw 模式的 PTY，二进制安全，但 stderr �
 
 ## 握手
 
-1. 车机建立传输（ADB 流或 TCP），手机输出魔数 `DCv1`。
+1. 车机建立传输（ADB `localabstract:` 流或 TCP），手机输出魔数 `DCv1`。
 2. 车 → 手 `HELLO`；手机据此创建虚拟屏和编码器。
 3. 手 → 车 `HELLO_ACK`，然后 `VIDEO_CONFIG`。
 4. 手机持续发送 `VIDEO_FRAME`；车机发送 `TOUCH` / `KEY`。
