@@ -18,8 +18,8 @@ class WirelessTest {
             listOf(Candidate("192.168.43.20", true), Candidate("192.168.43.1", true)),
             c.quick,
         )
-        // 253 个主机地址，去掉自己和已在 quick 里的两个
-        assertEquals(253 - 1 - 2, c.scan.size)
+        // /24 有 254 个主机地址，去掉自己和已在 quick 里的两个
+        assertEquals(254 - 1 - 2, c.scan.size)
         assertTrue(c.scan.none { it.host in setOf("192.168.43.100", "192.168.43.0", "192.168.43.255") })
     }
 
