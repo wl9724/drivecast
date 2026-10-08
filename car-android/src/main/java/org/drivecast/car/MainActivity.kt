@@ -326,6 +326,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         // 只有本线程用过这条新连接，加密计数器不会乱。iPhone 收到后退避重试，等那台停了再连上
         if (busy) runCatching { link.write(Msg.BYE, "车机正在显示另一台 iPhone".toByteArray(Charsets.UTF_8)) }
         closing.forEach { runCatching { it.close() } }
+        if (paused) log("iPhone 想要投屏：先点\"连接\"")
         wake()
     }
 
@@ -389,13 +390,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun togglePause() {
-        val s = synchronized(lock) {
+        val closing: List<Closeable> = synchronized(lock) {
             paused = !paused
-            if (paused) session else null
+            // 连同正在建立的连接一起关：否则推送、启动手机端服务会跑完才停
+            if (paused) listOfNotNull(session, adb, connecting) else emptyList()
         }
         pauseButton.text = if (paused) "连接" else "断开"
         if (paused) {
-            s?.let { runCatching { it.close() } }
+            closing.forEach { runCatching { it.close() } }
             log("已断开")
         } else {
             askedPermissionFor = null

@@ -6,10 +6,23 @@ import Security
 /// App 和广播扩展共享的数据：phoneId 和每台车机的 LTK 放钥匙串（访问组用 App Group），
 /// 其余不保密的设置放 App Group 的 UserDefaults。
 enum Store {
-    /// AltStore 会把 App Group 改名成 "<group>.<TEAMID>"，并把真名写进 App 和扩展 Info.plist 的 ALTAppGroups。
-    static let group = (Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String])?.first {
-        $0.hasPrefix("group.io.github.drivecast")
-    } ?? "group.io.github.drivecast"
+    /// App Group 在所有开发者账号间唯一，自己签名时签名工具会改名（AltStore 改成 "<group>.<TEAMID>" 并写进
+    /// Info.plist 的 ALTAppGroups；其他工具只改描述文件）。依次看 ALTAppGroups、描述文件里的 entitlements，最后用原名。
+    static let group = ((Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String]) ?? profileGroups())
+        .first { $0.hasPrefix(baseGroup) } ?? baseGroup
+    private static let baseGroup = "group.io.github.drivecast"
+
+    /// embedded.mobileprovision 是 CMS 签名包着的 plist，直接截出 <?xml ... </plist> 那段解析。
+    private static func profileGroups() -> [String] {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
+              let ent = plist["Entitlements"] as? [String: Any]
+        else { return [] }
+        return ent["com.apple.security.application-groups"] as? [String] ?? []
+    }
     static let defaults = UserDefaults(suiteName: group) ?? .standard
 
     /// 签名工具把 App Group 改了名或去掉时为 false：扩展读不到 App 里的配对信息。

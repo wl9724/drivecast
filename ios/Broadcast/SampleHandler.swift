@@ -19,6 +19,7 @@ class SampleHandler: RPBroadcastSampleHandler {
     private var early: (CVPixelBuffer, CGImagePropertyOrientation)? // 第一次 HELLO 之前的最新一帧（只持有一个 ReplayKit 缓冲），画面静止时也有东西可发
     private var lastHeard = Date()
     private var backoff: TimeInterval = 1
+    private var rejected = 0 // 连续几次在认证阶段收到明文 BYE（内容未认证，可能是冒充车机的人发的）
     private var timer: DispatchSourceTimer?
     private var stopped = false
 
@@ -155,9 +156,11 @@ class SampleHandler: RPBroadcastSampleHandler {
         do {
             f = try ch.open(raw)
         } catch {
-            // 认证没通过时车机发的是明文 BYE（内容未认证，不显示）
+            // 认证没通过时车机发的是明文 BYE。它没有认证，同一热点上谁都能冒充车机发，
+            // 所以只当普通失败处理；连续多次才停止广播并提示重新配对
             if raw.type == Msg.bye && !streaming {
-                return finish("车机拒绝了这台 iPhone，可能在车机上删除过配对。请在 DriveCast App 里重新配对")
+                rejected += 1
+                if rejected >= 3 { return finish("车机多次拒绝了这台 iPhone，可能在车机上清除过配对。请在 DriveCast App 里重新配对") }
             }
             return l.fail(error) // 解密失败立刻断开
         }
@@ -187,6 +190,7 @@ class SampleHandler: RPBroadcastSampleHandler {
         l.send(ch.seal(Msg.helloAck, helloAck())) // displayId = -1：不能反向控制
         streaming = true
         backoff = 1
+        rejected = 0
         if let ep = l.conn.currentPath?.remoteEndpoint { Store.remember(ep) }
         encoder?.start { [weak l] type, payload, done in
             l?.send(ch.seal(type, payload), done: done)

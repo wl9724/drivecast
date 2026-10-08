@@ -74,14 +74,17 @@ iPhone 没有 USB 调试，反过来由 iPhone 上的 DriveCast 用系统的屏�
 
 ### iPhone（只能显示）
 
-iPhone 上要装 DriveCast（屏幕直播扩展），只能在车机上**看**，不能在车机上点：苹果不允许第三方 App 模拟点击，
-车机左侧的按钮和触摸对 iPhone 都无效。竖屏的 iPhone 在横屏车机上居中显示，两侧是黑边。
+要求 **iOS 16 及以上**。iPhone 上要装 DriveCast（屏幕直播扩展），只能在车机上**看**，不能在车机上点：
+苹果不允许第三方 App 模拟点击，车机上的触摸和"返回"、应用按钮对 iPhone 都无效（"断开/连接"仍然有效，
+车机上的 DriveCast 也要开在前台）。竖屏的 iPhone 在横屏车机上居中显示，两侧是黑边。
 
 安装（不上架 App Store，用免费 Apple ID 自签，不用越狱）：
 
-1. 电脑（Windows 或 Mac）上装 [AltStore](https://altstore.io)（AltServer）或 [Sideloadly](https://sideloadly.io)。
-2. 从 [Actions](../../actions) 最新一次成功构建下载 iPhone 端的**未签名 IPA**，用 AltStore / Sideloadly 以你的 Apple ID 签名装到 iPhone 上。
-   iOS 16 及以上要先打开"设置 → 隐私与安全性 → 开发者模式"。
+1. 电脑（Windows 或 Mac）上装 [AltStore](https://altstore.io)（AltServer，推荐）或 [Sideloadly](https://sideloadly.io)。
+2. 打开 [Actions](../../actions) 里 **iOS** 工作流最新一次成功的运行，下载 `DriveCast-unsigned-ipa`，解压出 `DriveCast-unsigned.ipa`，
+   用 AltStore / Sideloadly 以你的 Apple ID 签名装到 iPhone 上。还要打开"设置 → 隐私与安全性 → 开发者模式"。
+   App 和直播扩展靠 **App Group** 共享配对信息，签名工具必须保留它（会改名，DriveCast 能识别）。
+   打开 App 后如果顶部提示"App Group 不可用"，说明这个签名工具把它去掉了，请换 AltStore。
 3. 免费 Apple ID 签的 App **7 天后失效**，打不开时重新签名安装一次（AltStore 在电脑和 iPhone 连同一个 Wi-Fi 时可以自动续签）。
    免费账号最多同时装 3 个自签 App，DriveCast 和它的直播扩展会占用 2 个 App ID（每 7 天最多 10 个）。
 
@@ -111,6 +114,11 @@ iPhone 连上后会顶替车机上正在进行的安卓手机投屏，iPhone 停
 | `protocol/` | 协议编解码（纯 Kotlin，两端共用） |
 | `car-android/` | 车机 App：ADB 客户端、解码显示、触控；iPhone 配对和加密连接 |
 | `phone-server/` | 手机端投屏服务：由车机推送，以 shell 身份运行 |
+| `ios/` | iPhone 端：配对 App + 屏幕直播扩展，见 [ios/README.md](ios/README.md) |
+| `docs/` | 协议规范 `protocol.md`；两端共用的配对测试向量 `testvectors/` |
+| `tools/` | 配对协议的 Python 参考实现，生成测试向量 |
+
+改协议时 Kotlin（`protocol/`）和 Swift（`ios/Core`）两边都要改，两边的测试都对照 `docs/testvectors/`。
 
 ## 构建
 
@@ -120,6 +128,9 @@ iPhone 连上后会顶替车机上正在进行的安卓手机投屏，iPhone 停
 ./gradlew :protocol:test :car-android:testDebugUnitTest :car-android:assembleDebug
 ```
 
+iPhone 端需要 macOS + Xcode 26 + [XcodeGen](https://github.com/yonaskolb/XcodeGen)，步骤见 [ios/README.md](ios/README.md)；
+没有 Mac 也可以只看 GitHub Actions 里 iOS 工作流的结果（`swift test` + 未签名构建）。
+
 ## 路线图
 
 | 阶段 | 内容 |
@@ -128,7 +139,7 @@ iPhone 连上后会顶替车机上正在进行的安卓手机投屏，iPhone 停
 | P1 | 协议 v1、车机解码与触控、安卓 Shell 模式投屏、简易桌面（已完成） |
 | P2 | Wi-Fi 无线：ADB 无线调试 + 局域网自动发现 + 心跳重连（已完成） |
 | P2b | 安卓 App 模式（不开 USB 调试）+ 蓝牙握手。Android 14 起每次投屏都要在手机上点"开始"、15 起还要先解锁，且只能镜像手机竖屏，做不到上车自动连，所以排在后面 |
-| P3 | iPhone ReplayKit：Wi-Fi 主动连车机，配对码配对 + 全程加密，只能显示（当前） |
+| P3 | iPhone ReplayKit：Wi-Fi 主动连车机，配对码配对 + 全程加密，只能显示（当前，尚未在真机上验证） |
 | P4 | 鸿蒙 NEXT |
 
 协议草案见 [docs/protocol.md](docs/protocol.md)。

@@ -139,6 +139,7 @@ class CastSession(
 
     private fun startDecoder(c: VideoConfig) {
         decoder?.release()
+        waitKeyframe = true // 新解码器要从关键帧开始，之前的 P 帧解出来是花屏
         decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
             configure(MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, c.width, c.height), surface, null, 0)
             start()
@@ -148,7 +149,8 @@ class CastSession(
     }
 
     private fun decode(f: VideoFrame) {
-        val d = decoder ?: return
+        // 还没收到 VIDEO_CONFIG（比如手机端的强制关键帧被编码器丢了）：要一个，手机会连同 SPS/PPS 一起发
+        val d = decoder ?: return requestKeyframe()
         // 丢过帧就等下一个关键帧，期间的 P 帧解出来也是花屏
         if (waitKeyframe && !f.keyframe) return requestKeyframe()
         if (queue(d, f.data, f.ptsUs, 0)) {
