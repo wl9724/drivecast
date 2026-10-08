@@ -15,11 +15,13 @@ import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
-import java.util.concurrent.Semaphore
+import java.util.Timer
+import kotlin.concurrent.schedule
 import kotlin.concurrent.thread
 
 /**
@@ -50,9 +52,13 @@ class IphoneServer(
             acquire()
         }
 
-    // ponytail: 只限了读超时、没限握手总时长，热点里的人可以慢慢喂字节占住名额；要防再加总时限
-    /** 同时握手的连接数：陌生人狂连也只占这么多线程。 */
-    private val slots = Semaphore(MAX_HANDSHAKES)
+    // ponytail: 按地址限，热点里的人凑够 4 个地址（多个 IPv6 地址、换 MAC 拿多个 DHCP 地址）
+    //  每 10 秒重连一次仍能占满名额；要防再改成名额满时踢掉最早的未认证握手
+    /** 正在握手的对方地址：每个地址同时只握手一条，最多 [MAX_HANDSHAKES] 条，陌生人狂连也只占这么多线程。 */
+    private val handshaking = HashSet<InetAddress>()
+
+    /** 握手总时限到了就关 socket：只限每次读的超时的话，慢慢喂字节就能一直占着名额。 */
+    private val deadlines = Timer("iphone-deadline", true)
 
     private val registration = object : NsdManager.RegistrationListener {
         override fun onServiceRegistered(info: NsdServiceInfo) {}
@@ -81,7 +87,8 @@ class IphoneServer(
             } catch (_: IOException) {
                 return // close()
             }
-            if (!slots.tryAcquire()) {
+            val from = s.inetAddress
+            if (!synchronized(handshaking) { handshaking.size < MAX_HANDSHAKES && handshaking.add(from) }) {
                 s.close()
                 continue
             }
@@ -89,7 +96,7 @@ class IphoneServer(
                 try {
                     handle(s)
                 } finally {
-                    slots.release()
+                    synchronized(handshaking) { handshaking.remove(from) }
                 }
             }
         }
@@ -100,16 +107,27 @@ class IphoneServer(
             s.tcpNoDelay = true
             s.soTimeout = CarHandshake.READ_TIMEOUT_MS
             val input = DataInputStream(BufferedInputStream(s.getInputStream(), 1 shl 16))
-            val channel = CarHandshake(carId, prefs::iphoneLtk, prefs::saveIphone, pairing, { s.soTimeout = it })
-                .run(input, s.getOutputStream())
-            if (channel == null) {
+            // 认证总共 10 秒；配对开始（车机显示配对码）后放宽到 90 秒
+            var deadline = closeLater(s, CarHandshake.READ_TIMEOUT_MS)
+            val setTimeout = { ms: Int ->
+                s.soTimeout = ms
+                deadline.cancel()
+                deadline = closeLater(s, ms)
+            }
+            val authed = try {
+                CarHandshake(carId, prefs::iphoneLtk, prefs::saveIphone, pairing, setTimeout, { s.close() })
+                    .run(input, s.getOutputStream())
+            } finally {
+                deadline.cancel()
+            }
+            if (authed == null) {
                 s.close()
                 log("iPhone 已配对，在 iPhone 上开始投屏即可")
                 return
             }
             // 投屏时视频至少每 100ms 一帧，这么久收不到任何数据就是断了
             s.soTimeout = CarHandshake.READ_TIMEOUT_MS
-            onAuthed(SecureLink(s, input, channel))
+            onAuthed(SecureLink(s, input, authed.second, authed.first))
         } catch (_: EOFException) {
             s.close() // iPhone 找车机时会探测端口，连上就断，不用提示
         } catch (e: Exception) {
@@ -118,10 +136,14 @@ class IphoneServer(
         }
     }
 
+    /** Timer 的任务抛异常会让整个 Timer 停掉，所以 close 的异常要吞掉。 */
+    private fun closeLater(s: Socket, ms: Int) = deadlines.schedule(ms.toLong()) { runCatching { s.close() } }
+
     override fun close() {
         runCatching { nsd.unregisterService(registration) }
         multicast.release()
         server.close()
+        deadlines.cancel()
     }
 
     companion object {

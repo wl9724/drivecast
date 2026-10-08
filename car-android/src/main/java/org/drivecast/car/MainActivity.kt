@@ -33,7 +33,9 @@ import org.drivecast.car.iphone.SecureLink
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
+import org.drivecast.protocol.Msg
 import java.io.Closeable
+import java.io.IOException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -66,6 +68,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     @Volatile
     private var adb: AdbConnection? = null
+
+    /** 正在握手的 USB 连接：可能一直等手机上点"允许 USB 调试"，iPhone 顶替时要能关掉它。 */
+    @Volatile
+    private var connecting: AdbConnection? = null
 
     @Volatile
     private var viaUsb = false
@@ -190,7 +196,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val closing = synchronized(lock) {
             worker?.interrupt()
             worker = null
-            listOfNotNull(session, adb, iphone).also { iphone = null }
+            listOfNotNull(session, adb, connecting, iphone).also { iphone = null }
         }
         closing.forEach { runCatching { it.close() } }
     }
@@ -221,7 +227,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun connectOnce(me: Thread) {
         if (target == null) return
         val device = usb.deviceList.values.firstOrNull { UsbTransport.findAdbInterface(it) != null }
-        if (device != null && usb.hasPermission(device)) return cast(me, connectUsb(device), viaUsb = true)
+        if (device != null && usb.hasPermission(device)) return cast(me, connectUsb(me, device), viaUsb = true)
 
         var finder: PhoneFinder? = null
         if (prefs.wireless) {
@@ -250,15 +256,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun connectUsb(device: UsbDevice): AdbConnection {
+    private fun connectUsb(me: Thread, device: UsbDevice): AdbConnection {
         val c = AdbConnection(UsbTransport.open(usb, device), key) {
             log("请在手机上允许 USB 调试，并勾选\"一律允许\"")
         }
         try {
+            // 先登记再握手：没人点"允许"时 connect() 一直阻塞，iPhone 顶替 / stopWorker 关掉它才能返回
+            synchronized(lock) {
+                if (!mayCast(me)) throw IOException("已取消")
+                connecting = c
+            }
             log("已连接 ${model(c.connect())}（有线）")
         } catch (e: Exception) {
             c.close()
             throw e
+        } finally {
+            synchronized(lock) { if (connecting === c) connecting = null }
         }
         return c
     }
@@ -300,12 +313,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     /**
      * 认证通过的 iPhone 顶替当前投屏：关掉当前会话，让连接线程接手。
      * 陌生人过不了认证，挤不掉正在用的投屏。没有画面（App 在后台）或点了"断开"时不接。
+     * 另一台 iPhone 正在投（或等着接手）时也不接：两台都在直播的话互相顶替，谁都看不成。
+     * 同一台 iPhone 重连（如 Wi-Fi 闪断）照常顶替。
      */
     private fun onIphone(link: SecureLink) {
+        var busy = false
         val closing: List<Closeable> = synchronized(lock) {
-            if (worker == null || paused) listOf(link)
-            else listOfNotNull(iphone, session, adb).also { iphone = link }
+            busy = listOfNotNull(iphone, session?.link).any { it is SecureLink && !it.phoneId.contentEquals(link.phoneId) }
+            if (worker == null || paused || busy) listOf(link)
+            else listOfNotNull(iphone, session, adb, connecting).also { iphone = link }
         }
+        // 只有本线程用过这条新连接，加密计数器不会乱。iPhone 收到后退避重试，等那台停了再连上
+        if (busy) runCatching { link.write(Msg.BYE, "车机正在显示另一台 iPhone".toByteArray(Charsets.UTF_8)) }
         closing.forEach { runCatching { it.close() } }
         wake()
     }

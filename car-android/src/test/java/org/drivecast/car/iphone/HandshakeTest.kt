@@ -14,6 +14,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -55,14 +56,14 @@ class HandshakeTest {
     private class Conn(val input: DataInputStream, val out: OutputStream)
 
     /** 起一个车机端握手，返回 (iPhone 这头的连接, 车机握手结果和车机那头的连接)。 */
-    private fun connect(): Pair<Conn, Future<Pair<SecureChannel?, Conn>>> {
+    private fun connect(): Pair<Conn, Future<Pair<Pair<ByteArray, SecureChannel>?, Conn>>> {
         val server = ServerSocket(0)
-        val car = pool.submit<Pair<SecureChannel?, Conn>> {
+        val car = pool.submit<Pair<Pair<ByteArray, SecureChannel>?, Conn>> {
             val s = server.use { it.accept() }
             synchronized(sockets) { sockets += s }
             val c = Conn(DataInputStream(BufferedInputStream(s.getInputStream())), s.getOutputStream())
             val save = { id: ByteArray, ltk: ByteArray, _: String -> store[id.hex()] = ltk }
-            CarHandshake(carId, { store[it.hex()] }, save, pairing).run(c.input, c.out) to c
+            CarHandshake(carId, { store[it.hex()] }, save, pairing, abort = { s.close() }).run(c.input, c.out) to c
         }
         val s = Socket("127.0.0.1", server.localPort).apply { soTimeout = 5_000 }
         synchronized(sockets) { sockets += s }
@@ -136,9 +137,11 @@ class HandshakeTest {
 
         val (c2, car2) = connect()
         val phone = authenticate(c2, ltk, c2.hello())
-        val (carChannel, carConn) = car2.get(5, TimeUnit.SECONDS)
+        val (authed, carConn) = car2.get(5, TimeUnit.SECONDS)
+        assertArrayEquals(phoneId, authed!!.first)
+        val carChannel = authed.second
         val hello = Hello(1280, 720, 160, 30, 4_000_000)
-        carConn.out.write(carChannel!!.seal(Msg.HELLO, hello.encode()))
+        carConn.out.write(carChannel.seal(Msg.HELLO, hello.encode()))
         assertEquals(hello, Hello.decode(phone.open(c2.input).also { assertEquals(Msg.HELLO, it.type) }.payload))
         c2.out.write(phone.seal(Msg.HELLO_ACK, HelloAck(-1).encode()))
         assertEquals(HelloAck(-1), HelloAck.decode(carChannel.open(carConn.input).payload))
@@ -169,5 +172,29 @@ class HandshakeTest {
         authenticate(c3, bytes16() + bytes16(), c3.hello())
         c3.expect(Msg.BYE)
         assertCarFailed(car3)
+    }
+
+    @Test
+    fun cancelOnCarAbortsPairingInProgress() {
+        pairing.open()
+        val (c, car) = connect()
+        c.hello()
+        c.send(Msg.PAIR_START, phoneId + Pairing.encode(Pairing.keyPair().public))
+        c.expect(Msg.PAIR_KEY)
+        codes.poll(5, TimeUnit.SECONDS)!!
+        // iPhone 卡住不发了：车机上点配对码取消，连接断开、配对码消失
+        pairing.close()
+        assertCarFailed(car)
+        assertNull(pairing.code)
+        assertFalse(pairing.active)
+        assertTrue(store.isEmpty())
+
+        // 取消正好落在校验通过和保存之间：不再保存 LTK
+        pairing.open()
+        assertTrue(pairing.begin {} != null)
+        pairing.close()
+        assertThrows(IOException::class.java) { pairing.commit { fail("取消后不应保存") } }
+        pairing.end(false)
+        assertNull(pairing.code)
     }
 }
