@@ -116,9 +116,10 @@ final class Encoder {
         return out
     }
 
-    /// 发送中的帧到 2 个就跳过（不排队，内存有限）。last 留着，定时器稍后会补上。
+    /// 不超过车机要的帧率；发送中的帧到 2 个就跳过（不排队，内存有限）。跳过的 last 留着，定时器稍后会补上。
     private func encode() {
-        guard let buf = last, sink != nil, pending < 2 else { return }
+        guard let buf = last, sink != nil, pending < 2,
+              CACurrentMediaTime() - lastAt >= 0.9 / Double(max(hello.fps, 1)) else { return }
         pending += 1
         lastAt = CACurrentMediaTime()
         let props = keyNext ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil

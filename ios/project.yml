@@ -23,6 +23,7 @@ targets:
       properties:
         CFBundleDisplayName: DriveCast
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         # 本地网络权限只写在 App 里，扩展继承 App 的授权（TN3179）
         NSLocalNetworkUsageDescription: DriveCast 要在局域网里找到车机，并把屏幕画面发给它。
         NSBonjourServices: [_drivecast._tcp]

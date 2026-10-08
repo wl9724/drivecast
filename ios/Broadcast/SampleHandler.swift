@@ -75,6 +75,7 @@ class SampleHandler: RPBroadcastSampleHandler {
         timer?.cancel()
         browser.cancel()
         wifi.cancel()
+        if streaming, let ch = channel { link?.send(ch.seal(Msg.bye, Data("iPhone 停止了投屏".utf8))) }
         link?.close()
         link = nil
         encoder?.stop()
