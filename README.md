@@ -6,7 +6,7 @@
 - 全部代码自研，只用公开的系统 API 和协议文档
 - Apache-2.0 开源
 
-> **状态：P3 开发中，尚未在真车和真机上验证。** 已实现 USB 有线投屏（横屏虚拟屏、H.264 视频、单指触控、返回键、启动指定应用）和基于 ADB 无线调试的 Wi-Fi 投屏（自动发现、断线重连）；车机端已支持 iPhone 配对和加密投屏（只能显示）。
+> **状态：P4 开发中，尚未在真车和真机上验证。** 已实现 USB 有线投屏（横屏虚拟屏、H.264 视频、单指触控、返回键、启动指定应用）和基于 ADB 无线调试的 Wi-Fi 投屏（自动发现、断线重连）；iPhone 和鸿蒙 NEXT 手机可以配对后加密投屏（只能显示）。
 
 ## 工作原理
 
@@ -16,7 +16,7 @@ H.264 编码后传回车机解码显示，车机的触摸再注入回这块虚�
 手机自己的屏幕照常使用。
 
 iPhone 没有 USB 调试，反过来由 iPhone 上的 DriveCast 用系统的屏幕直播（ReplayKit）录屏、编码后通过 Wi-Fi 主动连车机，
-配对过的 iPhone 才能连上，画面全程加密。
+配对过的 iPhone 才能连上，画面全程加密。鸿蒙 NEXT 手机也一样：手机上的 DriveCast 录屏后主动连车机，和 iPhone 用同一套配对和加密协议。
 
 ## 支持范围
 
@@ -25,7 +25,7 @@ iPhone 没有 USB 调试，反过来由 iPhone 上的 DriveCast 用系统的屏�
 | 安卓车机（后装大屏、允许侧载的原车如比亚迪 DiLink） | 目标 |
 | 安卓手机 / 鸿蒙 2～4 | 目标（P1） |
 | iPhone（ReplayKit，只能显示） | 开发中（P3） |
-| 鸿蒙 NEXT | 规划（P4） |
+| 鸿蒙 NEXT（只能显示） | 开发中（P4，未在真机验证） |
 | 鸿蒙座舱、QNX、Linux、AliOS 等非安卓车机 | 不支持 |
 
 ## 试用
@@ -91,9 +91,9 @@ iPhone 没有 USB 调试，反过来由 iPhone 上的 DriveCast 用系统的屏�
 配对（每台 iPhone 只做一次）：
 
 1. 让 iPhone 和车机连到同一个 Wi-Fi：iPhone 连车机的热点；或车机连 iPhone 的个人热点（老车机只支持 2.4GHz 时打开"最大兼容性"）；或都连同一个路由器。
-2. 车机打开 DriveCast，点左侧"**添加 iPhone**"，画面上会显示车机的地址（如 `192.168.43.1:27420`），2 分钟内有效。
+2. 车机打开 DriveCast，点左侧"**添加 iPhone/鸿蒙**"，画面上会显示车机的地址（如 `192.168.43.1:27420`），2 分钟内有效。
 3. 在 iPhone 的 DriveCast 里添加车机，第一次会请求"本地网络"权限，要允许。自动找不到车机时，手动输入车机屏幕上显示的地址。
-4. 车机屏幕上会出现 6 位**配对码**，90 秒内在 iPhone 上输入。输错一次这个码就作废，在 iPhone 上重试时车机会显示新码；连续错 3 次要在车机上重新点"添加 iPhone"。
+4. 车机屏幕上会出现 6 位**配对码**，90 秒内在 iPhone 上输入。输错一次这个码就作废，在 iPhone 上重试时车机会显示新码；连续错 3 次要在车机上重新点"添加 iPhone/鸿蒙"。
    点车机上的配对码可以取消配对。
 
 投屏：上车后在 iPhone 的 DriveCast 里开始投屏（或在控制中心长按"屏幕录制"，选 DriveCast 后开始直播）。
@@ -105,20 +105,44 @@ iPhone 连上后会顶替车机上正在进行的安卓手机投屏，iPhone 停
 - 把 iPhone 的"设置 → 显示与亮度 → **自动锁定**"设为**永不**：iPhone 一锁屏，系统就会停止屏幕直播。
 - 声音请让 iPhone 通过**蓝牙**连接车机播放。
 - 只有配对过的 iPhone 才能投屏，配对和之后的每一帧画面都加密：同一个热点里的其他人看不到画面，也挤不掉正在进行的投屏。
-- 车机上点"**清除 iPhone 配对**"会删掉所有 iPhone 的配对，正在投屏的 iPhone 立即断开，之后要重新配对。
+- 车机上点"**清除 iPhone/鸿蒙 配对**"会删掉所有 iPhone 和鸿蒙手机的配对，正在投屏的手机立即断开，之后要重新配对。
+
+### 鸿蒙 NEXT（只能显示）
+
+要求 **HarmonyOS 6.0 及以上**（纯血鸿蒙，API 20）。鸿蒙 2～4 是安卓内核，按上面安卓手机的方式用。
+手机上要装 DriveCast（鸿蒙版），只能在车机上**看**，不能在车机上点：鸿蒙不允许第三方 App 模拟点击。
+**尚未在真机上验证**，遇到问题请反馈。
+
+安装（不上架应用市场，用自己的华为账号签名）：从 [Actions](../../actions) 里 **HarmonyOS** 工作流最新一次成功的运行下载
+`DriveCast-harmony-unsigned-hap`，打开手机的开发者模式，用 DevEco Studio 或小白调试助手以你的华为账号签名安装。
+华为账号没实名认证时签名 **14 天**后失效、实名认证后 1 年，失效后重新签名安装一次。步骤见 [harmony/README.md](harmony/README.md)。
+
+配对和 iPhone 一样（每台手机只做一次）：手机和车机连到同一个 Wi-Fi 或热点，车机上点"**添加 iPhone/鸿蒙**"，
+在手机的 DriveCast 里点找到的车机（找不到就手动输入车机上显示的地址），再输入车机上显示的 6 位配对码。
+
+投屏：打开 DriveCast 点"**开始投屏**"，系统会弹窗确认录屏，点允许，等车机出现画面后再切到导航 App。
+
+注意：
+
+- **每次开始投屏系统都会弹窗确认**（鸿蒙不允许跳过），请停车时点。之后车机断开重连不用再确认，直到你停止投屏。
+- 保持手机**屏幕常亮**、导航 App 在前台：锁屏或熄屏可能会中断投屏。
+- 声音请让手机通过**蓝牙**连接车机播放。
+- 密码框、支付页面等**隐私窗口在车机上会被遮挡**，输入法和通知栏也可能被遮挡。
 
 ## 目录
 
 | 目录 | 内容 |
 |---|---|
 | `protocol/` | 协议编解码（纯 Kotlin，两端共用） |
-| `car-android/` | 车机 App：ADB 客户端、解码显示、触控；iPhone 配对和加密连接 |
+| `car-android/` | 车机 App：ADB 客户端、解码显示、触控；iPhone / 鸿蒙手机的配对和加密连接 |
 | `phone-server/` | 手机端投屏服务：由车机推送，以 shell 身份运行 |
 | `ios/` | iPhone 端：配对 App + 屏幕直播扩展，见 [ios/README.md](ios/README.md) |
-| `docs/` | 协议规范 `protocol.md`；两端共用的配对测试向量 `testvectors/` |
+| `harmony/` | 鸿蒙 NEXT 端：ArkTS App + 录屏编码的 NAPI 模块，见 [harmony/README.md](harmony/README.md) |
+| `docs/` | 协议规范 `protocol.md`；各端共用的配对测试向量 `testvectors/` |
 | `tools/` | 配对协议的 Python 参考实现，生成测试向量 |
 
-改协议时 Kotlin（`protocol/`）和 Swift（`ios/Core`）两边都要改，两边的测试都对照 `docs/testvectors/`。
+改协议时 Kotlin（`protocol/`）、Swift（`ios/Core`）和 ArkTS（`harmony/entry/src/main/ets/core`）都要改，各端的测试都对照 `docs/testvectors/`
+（鸿蒙 App 里打包了一份拷贝，CI 会检查两份一致）。
 
 ## 构建
 
@@ -131,6 +155,9 @@ iPhone 连上后会顶替车机上正在进行的安卓手机投屏，iPhone 停
 iPhone 端需要 macOS + Xcode 26 + [XcodeGen](https://github.com/yonaskolb/XcodeGen)，步骤见 [ios/README.md](ios/README.md)；
 没有 Mac 也可以只看 GitHub Actions 里 iOS 工作流的结果（`swift test` + 未签名构建）。
 
+鸿蒙端在 Linux 上就能构建（公开的 OpenHarmony SDK + npm 上的 hvigor，不用华为账号），步骤见 [harmony/README.md](harmony/README.md)；
+也可以用 DevEco Studio（Windows / macOS）打开 `harmony/`。
+
 ## 路线图
 
 | 阶段 | 内容 |
@@ -139,8 +166,8 @@ iPhone 端需要 macOS + Xcode 26 + [XcodeGen](https://github.com/yonaskolb/Xcod
 | P1 | 协议 v1、车机解码与触控、安卓 Shell 模式投屏、简易桌面（已完成） |
 | P2 | Wi-Fi 无线：ADB 无线调试 + 局域网自动发现 + 心跳重连（已完成） |
 | P2b | 安卓 App 模式（不开 USB 调试）+ 蓝牙握手。Android 14 起每次投屏都要在手机上点"开始"、15 起还要先解锁，且只能镜像手机竖屏，做不到上车自动连，所以排在后面 |
-| P3 | iPhone ReplayKit：Wi-Fi 主动连车机，配对码配对 + 全程加密，只能显示（当前，尚未在真机上验证） |
-| P4 | 鸿蒙 NEXT |
+| P3 | iPhone ReplayKit：Wi-Fi 主动连车机，配对码配对 + 全程加密，只能显示（已实现，尚未在真机上验证） |
+| P4 | 鸿蒙 NEXT：和 iPhone 同一套协议，系统录屏 + 硬件编码，只能显示（当前，未在真机验证）。鸿蒙手机上第三方 App 没有注入点击的接口，做不了反向控制 |
 
 协议草案见 [docs/protocol.md](docs/protocol.md)。
 

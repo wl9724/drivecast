@@ -66,6 +66,9 @@ Wi-Fi 下（往返 10~20ms）吞吐低于视频码率；stderr 也会混进 PTY�
 
 iPhone 没有 ADB，由 iPhone 上的 DriveCast（ReplayKit 广播扩展）**主动连车机**。车机是 TCP 服务端：
 
+鸿蒙 NEXT 手机（`harmony/`）用的是**同一套 TCP 协议**，消息、配对、加密完全一样，车机不区分两者：本节的"iPhone"同样指鸿蒙手机。
+
+
 - 监听端口 **27420**（被占用时用随机端口），双栈，所有网卡。
 - 通过 mDNS/Bonjour 广播服务 `_drivecast._tcp`，TXT 记录 `id=<carId 的 32 位十六进制>`。
 - iPhone 找车机的顺序：Bonjour → 上次连上的地址 → Wi-Fi 网关（iPhone 连车机热点时网关就是车机）→ 用户手动输入的地址。
@@ -113,10 +116,10 @@ iPhone 没有 ADB，由 iPhone 上的 DriveCast（ReplayKit 广播扩展）**主
    同一台 iPhone 重连会顶替自己的旧连接；另一台 iPhone 正在投屏时，新来的会收到加密的 `BYE` 被拒绝。
    认证握手总时限 10 秒；配对从显示配对码起总时限 90 秒（每次读也是 90 秒）。同一 IP 同时只允许一个握手。
 
-### 配对（只在 iPhone 的 DriveCast App 里做，车机上要先点"添加 iPhone"）
+### 配对（只在手机的 DriveCast App 里做，车机上要先点"添加 iPhone/鸿蒙"）
 
 1. 同上 1、2。手机没有这个 carId 的 LTK：手 → 车 `PAIR_START(phoneId, pkP, 名称)`。
-2. 车机不在配对模式（"添加 iPhone" 打开后 2 分钟内）就 `BYE`。否则生成临时 P-256 密钥和新配对码，
+2. 车机不在配对模式（"添加 iPhone/鸿蒙" 打开后 2 分钟内）就 `BYE`。否则生成临时 P-256 密钥和新配对码，
    **在车机屏幕上显示配对码**，车 → 手 `PAIR_KEY(pkC)`。配对期间连接超时放宽到 90 秒。
 3. 用户在 iPhone 上输入配对码。同一个码失败过就不再用，提示在车机上重新开始。
 4. i = 0..19 每轮：手 → 车 `PAIR_COMMIT(commitP_i)`；车 → 手 `PAIR_COMMIT(commitC_i)`；
@@ -146,3 +149,12 @@ type u8 · len u32 BE (= 明文长度 + 16) · AES-128-GCM 密文 || tag[16]
   所以竖屏 iPhone 在横屏车机上居中显示，车机不用做任何适配。
 - H.264 Constrained Baseline（老车机只保证支持 Baseline），画面静止时每 100ms 重发上一帧。
 - 不能反向控制，车机发来的 `TOUCH` / `KEY` / `LAUNCH` 一律忽略。
+
+### 鸿蒙 NEXT 端的视频
+
+- 系统录屏（`OH_AVScreenCapture`，整屏）按车机 `HELLO` 的宽高建虚拟屏、等比缩放补黑边，直接画进硬件 H.264 编码器的输入 surface，
+  Baseline（设备不接受时退回编码器默认），画面静止时编码器每 100ms 重复上一帧，每 10 秒一个关键帧。
+- 每次开始录屏系统都要用户确认，所以车机断开重连时录屏不停；重连后重发缓存的 `VIDEO_CONFIG` 并请求关键帧。
+- 系统 GCM 在没有输入数据时不把 AAD 算进 tag，空负载帧（`PING`、`REQUEST_KEYFRAME`）的 tag 由鸿蒙端自己算（GHASH），
+  测试向量 `frames[1]` 就是这种情况。
+- 同样不能反向控制，`HELLO_ACK` 回 `displayId = -1`，`TOUCH` / `KEY` / `LAUNCH` 一律忽略。

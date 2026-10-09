@@ -19,7 +19,7 @@ jobs:
       # 公开的 OpenHarmony SDK + npm 上的 hvigor，不用登录华为账号（和 Servo 的做法一样）
       - uses: openharmony-rs/setup-ohos-sdk@v1.0.1
         with:
-          version: "6.0"
+          version: "6.0.0.1"
           fixup-path: true
       - name: 安装 hvigor
         run: |
@@ -38,3 +38,11 @@ jobs:
           name: DriveCast-harmony-unsigned-hap
           path: harmony/entry/build/default/outputs/default/*.hap
           if-no-files-found: error
+      - name: 编译 ohosTest（hypium 从 ohpm 公共仓库下载；真机上用 DevEco Studio 跑）
+        working-directory: harmony
+        run: |
+          mkdir -p oh_modules/@ohos/hypium
+          curl -fsSL https://ohpm.openharmony.cn/ohpm/@ohos/hypium/-/hypium-1.0.21.har | tar xz --strip-components=1 -C oh_modules/@ohos/hypium
+          export NODE_PATH="$HVIGOR_PATH/node_modules"
+          node "$HVIGOR_PATH/node_modules/@ohos/hvigor/bin/hvigor.js" --no-daemon --mode module \
+            -p module=entry@ohosTest -p isOhosTest=true -p product=default assembleHap
