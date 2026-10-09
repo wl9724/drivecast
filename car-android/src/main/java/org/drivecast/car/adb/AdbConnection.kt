@@ -8,9 +8,12 @@ import org.drivecast.car.adb.AdbMessage.Companion.CLSE
 import org.drivecast.car.adb.AdbMessage.Companion.CNXN
 import org.drivecast.car.adb.AdbMessage.Companion.OKAY
 import org.drivecast.car.adb.AdbMessage.Companion.OPEN
+import org.drivecast.car.adb.AdbMessage.Companion.STLS
+import org.drivecast.car.adb.AdbMessage.Companion.STLS_VERSION
 import org.drivecast.car.adb.AdbMessage.Companion.WRTE
 import java.io.Closeable
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -36,21 +39,42 @@ class AdbConnection(
     /**
      * 握手并完成认证，返回手机的 banner（如 "device::ro.product.model=..."）。
      * [allowPrompt] 为 false 时（无线自动连接）：不发公钥，不在别人的手机上弹授权框；
-     * 并且对方必须要求认证、认可我们的签名，否则不是授权过本车机的手机。
+     * 并且对方必须要求认证、认可我们的签名（或在 TLS 里认可我们的证书），否则不是授权过本车机的手机。
+     *
+     * 手机回 STLS（Android 11+ 无线调试）时升级到 TLS：手机校验车机证书里的公钥，没有 AUTH。
+     * [requireTls]：mDNS 上的服务谁都能发布，只认 TLS（TLS 1.3 的客户端签名绑定这次握手，转发不了），
+     * 绝不签 AUTH 令牌（令牌不绑定连接，签了可能被转给手机冒充车机），也不接受明文 CNXN。
      */
-    fun connect(allowPrompt: Boolean = true): String {
+    fun connect(allowPrompt: Boolean = true, requireTls: Boolean = false): String {
         send(AdbMessage(CNXN, VERSION, MAX_DATA, "host::\u0000".toByteArray()))
         var signed = false
+        var tls = false
         while (true) {
-            val m = AdbMessage.read(transport)
+            val m = try {
+                AdbMessage.read(transport)
+            } catch (e: IOException) {
+                // TLS 1.3 里手机拒绝车机证书的警报要到握手后第一次读才收到
+                if (tls && e !is SocketTimeoutException) {
+                    throw IOException("手机不认这台车机：没有配对或配对已失效，请在车机上重新\"无线配对\"", e)
+                }
+                throw e
+            }
             when (m.command) {
+                STLS -> {
+                    if (tls) throw IOException("重复的 STLS")
+                    send(AdbMessage(STLS, STLS_VERSION, 0))
+                    transport.startTls(key)
+                    tls = true
+                }
                 CNXN -> {
-                    if (!allowPrompt && !signed) throw IOException("对方没有要求授权，不是授权过本车机的手机")
+                    if (requireTls && !tls) throw IOException("对方没有用 TLS，不是开着无线调试的手机")
+                    if (!allowPrompt && !signed && !tls) throw IOException("对方没有要求授权，不是授权过本车机的手机")
                     maxData = m.arg1.coerceIn(1, MAX_DATA)
                     thread(isDaemon = true, name = "adb-reader") { readLoop() }
                     return String(m.payload, Charsets.UTF_8).trimEnd('\u0000')
                 }
                 AUTH -> {
+                    if (requireTls || tls) throw IOException("无线调试的连接不签 ADB 令牌，对方不是开着无线调试的手机")
                     if (m.arg0 != AUTH_TOKEN) throw IOException("意外的 AUTH 类型 ${m.arg0}")
                     if (!signed) {
                         signed = true

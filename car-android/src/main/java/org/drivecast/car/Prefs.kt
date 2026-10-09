@@ -5,7 +5,7 @@ import org.drivecast.protocol.hex
 import org.drivecast.protocol.unhex
 import java.io.IOException
 
-/** 车机记住的东西：是否开了无线、手机最近用过的 IP、配对过的 iPhone。 */
+/** 车机记住的东西：是否开了无线、手机最近用过的 IP、无线配对过的安卓手机、配对过的 iPhone。 */
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("drivecast", Context.MODE_PRIVATE)
 
@@ -20,6 +20,11 @@ class Prefs(context: Context) {
     var phoneIps: List<String>
         get() = sp.getString("phone_ips", "").orEmpty().split(',').filter { it.isNotEmpty() }
         set(v) = sp.edit().putString("phone_ips", v.distinct().take(8).joinToString(",")).apply()
+
+    /** 无线配对过的安卓手机的 GUID（手机"无线调试"mDNS 服务的实例名），最近配对的排最前。 */
+    var pairedPhones: List<String>
+        get() = sp.getString("paired_phones", "").orEmpty().split(',').filter { it.isNotEmpty() }
+        set(v) = sp.edit().putString("paired_phones", v.distinct().take(8).joinToString(",")).apply()
 
     fun iphoneLtk(phoneId: ByteArray): ByteArray? =
         iphones.getString(phoneId.hex(), null)?.substringBefore(' ')?.unhex()

@@ -1,6 +1,5 @@
 package org.drivecast.car.adb
 
-import android.util.Base64
 import java.io.File
 import java.math.BigInteger
 import java.nio.ByteBuffer
@@ -12,6 +11,8 @@ import java.security.Signature
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * 车机的 ADB RSA-2048 密钥。必须持久保存：手机勾选"一律允许"记住的是这把公钥，
@@ -27,10 +28,14 @@ class AdbKey(val keyPair: KeyPair, private val name: String) {
         sign()
     }
 
-    /** AUTH(RSAPUBLICKEY) 的负载：base64(Android 格式公钥) + " 名称\0"。 */
+    /**
+     * AUTH(RSAPUBLICKEY) 和无线配对 PeerInfo 的负载：base64(Android 格式公钥) + " 名称\0"。
+     * 手机把第一个空格后面当名称显示，名称里不能再有空格。
+     */
+    @OptIn(ExperimentalEncodingApi::class) // 纯 Kotlin 实现：java.util.Base64 要 API 26，android.util.Base64 在单元测试里没有
     fun publicKeyPayload(): ByteArray {
-        val b64 = Base64.encodeToString(androidPublicKey(keyPair.public as RSAPublicKey), Base64.NO_WRAP)
-        return "$b64 $name\u0000".toByteArray(Charsets.US_ASCII)
+        val b64 = Base64.encode(androidPublicKey(keyPair.public as RSAPublicKey))
+        return "$b64 ${name.replace(' ', '_')}\u0000".toByteArray(Charsets.US_ASCII)
     }
 
     companion object {

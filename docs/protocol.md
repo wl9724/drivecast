@@ -158,3 +158,28 @@ type u8 · len u32 BE (= 明文长度 + 16) · AES-128-GCM 密文 || tag[16]
 - 系统 GCM 在没有输入数据时不把 AAD 算进 tag，空负载帧（`PING`、`REQUEST_KEYFRAME`）的 tag 由鸿蒙端自己算（GHASH），
   测试向量 `frames[1]` 就是这种情况。
 - 同样不能反向控制，`HELLO_ACK` 回 `displayId = -1`，`TOUCH` / `KEY` / `LAUNCH` 一律忽略。
+
+## 安卓无线调试（Android 11+，不插线）
+
+不是 DriveCast 自己的协议：车机作为 adb 主机实现 AOSP 的无线调试（`packages/modules/adb` 的 `pairing_auth`、`pairing_connection`、`transport`），
+车机直接在这条连接上投屏，之后和上面的流程一样。实现在 `car-android/.../adb/`（`AdbPairing.kt`、`Spake2.kt`、`Tls.kt`、`AdbCert.kt`）。
+
+TLS 一律 1.3（车机打包 Conscrypt），车机出示自己 ADB RSA 密钥的自签证书，不校验手机的证书（adbd 每次启动随机换密钥）。
+
+配对（手机"使用配对码配对"，mDNS `_adb-tls-pairing._tcp`，实例名 = 手机 GUID）：
+
+1. TLS 握手后双方导出密钥材料：标签 `adb-label\0`（10 字节）、无 context、64 字节。密码 = 配对码 ASCII || 导出的 64 字节。
+2. SPAKE2（BoringSSL spake25519）：车机是 alice `adb pair client\0`，手机是 bob `adb pair server\0`，消息 32 字节、密钥 64 字节。参考模型 `tools/spake2_ref.py`。
+3. 包格式：version u8 = 1 · type u8（0 = SPAKE2 消息，1 = PeerInfo）· 长度 u32 BE（≤ 16384）· 负载。每一步双方都先发再收。
+4. `aesKey = HKDF-SHA256(ikm = SPAKE2 密钥, salt = 空, info = "adb pairing_auth aes-128-gcm key", L = 16)`；
+   PeerInfo 明文固定 8192 字节，AES-128-GCM，nonce = 计数器 u64 小端（0）|| 4 个 0，无 AAD。解不开就是配对码错了。
+5. 车机的 PeerInfo：type 0 · `base64(Android 格式公钥) 名称`（名称不含空格），补 0。手机把公钥写进 `adb_keys`（和 USB "一律允许"同一个文件）。
+   手机的 PeerInfo：type 1 · GUID（`adb-<序列号>-<6 位>`），车机记下来。
+
+连接（mDNS `_adb-tls-connect._tcp`，实例名 = GUID，端口每次打开无线调试都变）：车机 CNXN → 手机 `STLS`（`0x534C5453`，arg0 `0x01000000`）
+→ 车机回 `STLS` → 同一条 TCP 上 TLS 1.3（手机只核对证书里的公钥是否在 `adb_keys` 里；不认时 TLS 1.3 的车机要到第一次读才收到警报）
+→ 手机在 TLS 里发 CNXN，没有 AUTH。车机随后在这条连接上投屏，不开 `tcpip:5555`。
+
+安全：mDNS 上的服务谁都能发布，所以车机只连 GUID 配对过的实例，并且在这条路上**必须 STLS**：对方回 AUTH（要车机签令牌）或明文 CNXN 都直接断开。
+旧 AUTH 的令牌不绑定连接，可以被转发去冒充车机；TLS 1.3 的客户端签名绑定这次握手，转发不了。车机仍然无法确认对方真是那台手机，
+所以这条路上得到的地址（mDNS、用户输入的）不交给会签旧令牌的 5555 自动连接，那里只用 USB 连接时手机报告的 IP 和上次连上的 IP。

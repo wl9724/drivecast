@@ -1,6 +1,7 @@
 package org.drivecast.car
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,6 +12,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -20,16 +22,19 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbKey
 import org.drivecast.car.adb.UsbTransport
 import org.drivecast.car.iphone.IphoneServer
 import org.drivecast.car.iphone.PairingMode
 import org.drivecast.car.iphone.SecureLink
+import org.drivecast.car.wireless.AdbMdns
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
@@ -55,6 +60,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var pairingView: TextView
     private val pairing = PairingMode(onChange = { runOnUiThread(::showPairing) })
     private var iphoneServer: IphoneServer? = null
+
+    /** 一直在找手机"无线调试"的连接服务；只连 GUID 是配对过的那些。 */
+    private var tlsPhones: AdbMdns? = null
+
+    /** 配对框里配对码留空时输入的无线调试地址（收不到 mDNS 时用）。端口每次打开无线调试都变，不存盘。 */
+    @Volatile
+    private var typedTls: AdbMdns.Service? = null
+
     private val usb by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
     private val prefs by lazy { Prefs(this) }
     private val key by lazy { AdbKey.loadOrCreate(filesDir, "drivecast@${Build.MODEL}") }
@@ -125,6 +138,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             addView(button("返回") { session?.key(KeyEvent.KEYCODE_BACK) })
             addView(button("开启无线") { background { enableWireless() } })
             addView(button("关闭无线") { background { disableWireless() } })
+            addView(button("无线配对") { pairDialog() })
             addView(pauseButton)
             addView(button("添加 iPhone/鸿蒙") { addIphone() })
             addView(button("清除 iPhone/鸿蒙 配对") { clearIphones() })
@@ -155,6 +169,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             log("iPhone/鸿蒙 服务启动失败：${e.message ?: e}")
             null
         }
+        tlsPhones = runCatching { AdbMdns(this, AdbMdns.CONNECT) }.getOrNull()
 
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -171,6 +186,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         unregisterReceiver(permissionReceiver)
         iphoneServer?.close()
+        tlsPhones?.close()
         stopWorker()
         super.onDestroy()
     }
@@ -241,6 +257,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 log("已无线连接 ${model(found.banner)}")
                 return cast(me, found.adb, viaUsb = false)
             }
+            // 配对过的手机开着"无线调试"：直接经 TLS 投屏，地址不进 phoneIps。插着线时先走下面的 USB 授权
+            val paired = prefs.pairedPhones
+            val tls = if (device == null) tlsPhones?.services?.values?.firstOrNull { it.name in paired } ?: typedTls else null
+            if (tls != null) {
+                val phone = try {
+                    finder.connectTls(tls.host, tls.port)
+                } catch (e: Exception) {
+                    return log("通过无线调试连接失败：${e.message ?: e}")
+                }
+                log("已通过无线调试连接 ${model(phone.banner)}")
+                return cast(me, phone.adb, viaUsb = false)
+            }
         }
 
         when {
@@ -253,7 +281,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             device != null && !permissionAnswered -> log("请在车机上允许 DriveCast 访问手机")
             device != null -> log("没有 USB 权限：点\"断开\"再点\"连接\"重新申请，或重新插拔数据线")
             finder?.unauthorized == true -> log("手机不再信任这台车机（7 天没连或没勾\"一律允许\"）：请插线连接一次")
-            prefs.wireless -> log("没找到手机：确认车机和手机连在同一个 Wi-Fi 或热点上。手机重启后需要插一次线")
+            prefs.wireless -> log("没找到手机：确认车机和手机连在同一个 Wi-Fi 或热点上。手机重启后要插一次线，无线配对过的打开\"无线调试\"即可")
             else -> log("用数据线连接手机，并在手机开发者选项里打开 USB 调试")
         }
     }
@@ -389,6 +417,100 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         } else {
             log("已停止无线连接。手机上的无线调试要插线后再点一次，或重启手机才会关闭")
         }
+    }
+
+    /**
+     * Android 11+ 不插线：手机"开发者选项 → 无线调试 → 使用配对码配对"，车机上选中（或输入）手机显示的地址、输入配对码。
+     * 配对码留空 = 已经配对过，直接连手机"无线调试"页面上的地址（车机收不到 mDNS 时用）。
+     */
+    private fun pairDialog() {
+        val addr = EditText(this).apply {
+            hint = "IP 地址:端口"
+            setSingleLine()
+        }
+        val code = EditText(this).apply {
+            hint = "6 位配对码"
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        val found = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val mdns = runCatching {
+            AdbMdns(this, AdbMdns.PAIRING) { list ->
+                runOnUiThread {
+                    found.removeAllViews()
+                    list.forEach { s -> found.addView(button("${s.host}:${s.port}") { addr.setText("${s.host}:${s.port}") }) }
+                    if (list.size == 1 && addr.text.isEmpty()) addr.setText("${list[0].host}:${list[0].port}")
+                }
+            }
+        }.getOrNull()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), 0)
+            addView(TextView(context).apply {
+                text = "手机连车机的热点（或和车机连同一个 Wi-Fi），打开 开发者选项 → 无线调试 → 使用配对码配对，" +
+                    "配对窗口不要关。下面会列出找到的手机，点一下填入地址；没有就手动输入手机上显示的 IP 地址和端口。"
+            })
+            addView(found)
+            addView(addr)
+            addView(code)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("无线配对（Android 11 及以上）")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("配对") { _, _ -> pair(addr.text.toString(), code.text.toString()) }
+            .setNegativeButton("取消", null)
+            .setOnDismissListener { mdns?.close() }
+            .show()
+    }
+
+    private fun pair(address: String, code: String) {
+        val host = address.substringBeforeLast(':').trim()
+        val port = address.substringAfterLast(':', "").trim().toIntOrNull()
+        if (host.isEmpty() || port == null || port !in 1..65535) return tell("地址的格式是 IP:端口，如 192.168.43.20:37145")
+        if (code.isNotEmpty() && !(code.length == 6 && code.all { it in '0'..'9' })) return tell("配对码是 6 位数字")
+        // 网络操作不在界面线程；不碰投屏会话，不用拿 lock
+        thread {
+            tell(
+                try {
+                    pairAndEnable(host, port, code)
+                } catch (e: Exception) {
+                    "失败：${e.message ?: e}"
+                },
+            )
+        }
+    }
+
+    /** 状态栏几秒后就会被连接线程的提示盖掉：配对的结果另弹 Toast。 */
+    private fun tell(msg: String) {
+        log(msg)
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+    }
+
+    /** 配对（配对码不为空时）后交给连接线程经 TLS 连接，返回给用户看的结果。 */
+    private fun pairAndEnable(host: String, port: Int, code: String): String {
+        var result = "正在通过无线调试连接…"
+        if (code.isEmpty()) {
+            typedTls = AdbMdns.Service("", host, port)
+        } else {
+            log("正在配对…")
+            val guid = PhoneFinder(this, key, ::log).pair(host, port, code)
+            prefs.pairedPhones = listOf(guid) + prefs.pairedPhones
+            log("配对成功，正在找手机的无线调试端口…")
+            if (connectService(guid) == null) {
+                result = "配对成功，但没找到手机的无线调试端口：把手机\"无线调试\"页面上的 IP 地址和端口填进来、配对码留空再试"
+            }
+        }
+        prefs.wireless = true
+        wake()
+        return result
+    }
+
+    /** 连接端口和配对端口不同，只能从 mDNS 找（实例名就是 GUID），最多等 10 秒。 */
+    private fun connectService(guid: String): AdbMdns.Service? {
+        repeat(20) {
+            tlsPhones?.services?.get(guid)?.let { return it }
+            Thread.sleep(500)
+        }
+        return null
     }
 
     private fun togglePause() {

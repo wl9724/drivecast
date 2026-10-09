@@ -35,6 +35,10 @@ class AdbMessage(
         const val CLSE = 0x45534c43
         const val WRTE = 0x45545257
 
+        /** Android 11+ 无线调试：手机回 STLS 要求升级到 TLS，主机回同样的 STLS 后开始握手。 */
+        const val STLS = 0x534c5453
+        const val STLS_VERSION = 0x01000000
+
         const val AUTH_TOKEN = 1
         const val AUTH_SIGNATURE = 2
         const val AUTH_RSAPUBLICKEY = 3

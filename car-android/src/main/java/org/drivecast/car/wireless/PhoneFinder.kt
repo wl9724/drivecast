@@ -6,7 +6,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbKey
+import org.drivecast.car.adb.AdbPairing
 import org.drivecast.car.adb.TcpTransport
+import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -29,6 +31,24 @@ class PhoneFinder(context: Context, private val key: AdbKey, private val log: (S
         val wifi = wifiNetwork()
         val candidates = Candidates.of(remembered, wifi?.let(::gatewayOf), subnets(wifi))
         return connectFirst(probe(candidates, wifi), wifi)
+    }
+
+    /** Android 11+ 无线调试配对（用户在车机上输入手机显示的地址和配对码），返回手机的 GUID。 */
+    fun pair(host: String, port: Int, code: String): String = AdbPairing.pair(host, port, code, key, binder(host))
+
+    /**
+     * 经无线调试的 TLS 端口连上配对过的手机，直接在这条连接上投屏。
+     * 只认 TLS、不签 AUTH 令牌：这个地址来自 mDNS 或用户输入，见 [AdbConnection.connect] 的 requireTls。
+     * 也不开 5555、不记这个地址：对方是谁确认不了，不能交给会签 AUTH 令牌的 5555 自动连接。
+     */
+    fun connectTls(host: String, port: Int): Found = connect(host, port, binder(host), requireTls = true)
+
+    /** 和 5555 一样只连本地网段里的地址（不走 DNS），Wi-Fi 网段的绑到 Wi-Fi 网络。 */
+    private fun binder(host: String): (Socket) -> Unit {
+        val wifi = wifiNetwork()
+        val c = Candidates.of(listOf(host), null, subnets(wifi)).firstOrNull()
+            ?: throw IOException("$host 不在车机所在的网段里：手机要连车机的热点，或和车机连同一个 Wi-Fi")
+        return { s -> if (c.viaWifi) wifi?.bindSocket(s) }
     }
 
     /**
@@ -92,21 +112,28 @@ class PhoneFinder(context: Context, private val key: AdbKey, private val log: (S
 
     private fun connectFirst(hosts: List<Candidate>, wifi: Network?): Found? {
         for (c in hosts) {
-            var transport: TcpTransport? = null
             try {
-                transport = TcpTransport.connect(c.host, CONNECT_TIMEOUT_MS) { s -> if (c.viaWifi) wifi?.bindSocket(s) }
-                transport.socket.soTimeout = HANDSHAKE_TIMEOUT_MS
-                val adb = AdbConnection(transport, key)
-                val banner = adb.connect(allowPrompt = false)
-                // 投屏时视频至少每 100ms 一帧，这么久收不到任何数据就是断了
-                transport.socket.soTimeout = CAST_READ_TIMEOUT_MS
-                return Found(adb, c.host, banner)
+                return connect(c.host, TcpTransport.PORT, { s -> if (c.viaWifi) wifi?.bindSocket(s) }, requireTls = false)
             } catch (e: Exception) {
-                transport?.close()
                 if (e.message.orEmpty().contains("未授权")) unauthorized = true
             }
         }
         return null
+    }
+
+    private fun connect(host: String, port: Int, bind: (Socket) -> Unit, requireTls: Boolean): Found {
+        val transport = TcpTransport.connect(host, CONNECT_TIMEOUT_MS, port, bind)
+        try {
+            transport.socket.soTimeout = HANDSHAKE_TIMEOUT_MS
+            val adb = AdbConnection(transport, key)
+            val banner = adb.connect(allowPrompt = false, requireTls = requireTls)
+            // 投屏时视频至少每 100ms 一帧，这么久收不到任何数据就是断了
+            transport.socket.soTimeout = CAST_READ_TIMEOUT_MS
+            return Found(adb, host, banner)
+        } catch (e: Exception) {
+            transport.close()
+            throw e
+        }
     }
 
     private companion object {

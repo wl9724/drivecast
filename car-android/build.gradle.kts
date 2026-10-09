@@ -14,6 +14,8 @@ android {
         // CI 用运行序号，保证每次发布都比上一次大，车机上能直接覆盖升级
         versionCode = System.getenv("DRIVECAST_VERSION_CODE")?.toIntOrNull()?.plus(100) ?: 2
         versionName = "0.1.0"
+        // Conscrypt 的 so 只要 ARM 的：车机都是 ARM，x86 的两份会让 APK 再大 2 MB
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
     // 固定的发布签名：密钥只在 CI 的 Secrets 里，本地和 fork 构建没有它时只能出 debug 包
@@ -71,5 +73,14 @@ androidComponents {
 
 dependencies {
     implementation(project(":protocol"))
+    // 无线调试的 TLS 1.3 和 exporter：车机系统 Android 10 之前没有 TLS 1.3（Apache-2.0）
+    implementation("org.conscrypt:conscrypt-android:2.7.0")
     testImplementation("junit:junit:4.13.2")
+    // 单元测试跑在电脑的 JVM 上：用带 Linux/macOS/Windows so 的版本，测真的 TLS
+    testImplementation("org.conscrypt:conscrypt-openjdk-uber:2.7.0")
+}
+
+// 两个 Conscrypt 的类同名，单元测试只留 JVM 版（安卓版会去加载 ARM 的 so）
+configurations.configureEach {
+    if (name.endsWith("UnitTestRuntimeClasspath")) exclude(group = "org.conscrypt", module = "conscrypt-android")
 }
