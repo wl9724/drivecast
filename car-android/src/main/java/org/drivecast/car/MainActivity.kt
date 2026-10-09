@@ -421,10 +421,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (e.actionMasked !in TOUCH_ACTIONS) return true
         val w = screen.width / 16 * 16
         val h = screen.height / 16 * 16
-        val n = minOf(e.pointerCount, Touch.MAX_POINTERS)
-        // 超出上限的手指不发；它的按下/抬起也就不发，手机端看到的手指数前后一致
-        if (e.actionIndex >= n) return true
-        val pointers = List(n) { i ->
+        // 所有手指都发：只截掉一部分会让手机看到没按下过的手指，Android 16 会因此拒绝之后的全部触摸
+        val pointers = List(e.pointerCount) { i ->
             Pointer(
                 e.getPointerId(i),
                 (e.getX(i) * w / v.width).toInt().coerceIn(0, w - 1),

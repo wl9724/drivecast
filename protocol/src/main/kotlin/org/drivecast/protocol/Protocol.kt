@@ -138,7 +138,8 @@ data class Touch(val action: Int, val actionId: Int, val pointers: List<Pointer>
     }
 
     companion object {
-        const val MAX_POINTERS = 10
+        /** 和安卓 MotionEvent 的上限（input/Input.h MAX_POINTERS）一致，车机上的事件不会超过它。 */
+        const val MAX_POINTERS = 16
 
         fun decode(p: ByteArray): Touch {
             val b = ByteBuffer.wrap(p)

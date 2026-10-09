@@ -36,7 +36,7 @@ Wi-Fi 下（往返 10~20ms）吞吐低于视频码率；stderr 也会混进 PTY�
 | `0x10` | VIDEO_CONFIG | 手 → 车 | width u16 · height u16 · SPS/PPS（H.264 Annex B） |
 | `0x11` | VIDEO_FRAME | 手 → 车 | pts u64（μs） · flags u8（bit0 关键帧） · H.264 Annex B 数据 |
 | `0x12` | REQUEST_KEYFRAME | 车 → 手 | 空。车机丢帧后发送（最多每秒一次），并丢弃之后的非关键帧直到收到关键帧 |
-| `0x20` | TOUCH | 车 → 手 | action u8（0 按下 / 1 抬起 / 2 移动 / 3 取消 / 5 又一根手指按下 / 6 某根手指抬起） · actionId u8（按下或抬起的那根手指） · count u8（1～10） · [id u8 · x u16 · y u16] × count。每个事件带上当前按着的所有手指，对应一个 MotionEvent；车机只合并连续的移动事件，不改变先后顺序 |
+| `0x20` | TOUCH | 车 → 手 | action u8（0 按下 / 1 抬起 / 2 移动 / 3 取消 / 5 又一根手指按下 / 6 某根手指抬起） · actionId u8（按下或抬起的那根手指） · count u8（1～16，安卓 MotionEvent 的上限） · [id u8 · x u16 · y u16] × count。每个事件带上当前按着的所有手指，对应一个 MotionEvent；车机只合并连续的移动事件，不改变先后顺序 |
 | `0x21` | KEY | 车 → 手 | action u8（0 按下 / 1 抬起） · keycode u16（Android KEYCODE_*） |
 | `0x30` | APP_LIST | 双向 | 预留，未实现 |
 | `0x31` | LAUNCH | 车 → 手 | 包名（UTF-8），在虚拟屏上启动其桌面入口 |

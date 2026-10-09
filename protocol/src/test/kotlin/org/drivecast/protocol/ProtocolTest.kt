@@ -47,7 +47,7 @@ class ProtocolTest {
     @Test
     fun malformedTouchIsRejected() {
         val ok = Touch(0, 0, listOf(Pointer(0, 1, 2))).encode()
-        for (bad in listOf(ok.copyOf(ok.size - 1), ok.copyOf().also { it[2] = 0 }, ok.copyOf().also { it[2] = 11 })) {
+        for (bad in listOf(ok.copyOf(ok.size - 1), ok.copyOf().also { it[2] = 0 }, ok.copyOf().also { it[2] = 17 })) {
             try {
                 Touch.decode(bad)
                 org.junit.Assert.fail("应当拒绝")
