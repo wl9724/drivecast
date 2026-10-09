@@ -53,7 +53,7 @@
 
 ## 构建
 
-CI（`.github/workflows/harmony.yml`）在 ubuntu 上用**公开的 OpenHarmony SDK**（`openharmony-rs/setup-ohos-sdk`，API 20）和 npm 上的
+CI（`.github/workflows/harmony.yml`）在 ubuntu 上用**公开的 OpenHarmony SDK**（`openharmony-rs/setup-ohos-sdk` 6.0.0.1，API 20）和 npm 上的
 `@ohos/hvigor` / `@ohos/hvigor-ohos-plugin` 无头构建，不需要登录华为账号下载 HarmonyOS 命令行工具，做法和 Servo 一样：
 
 ```sh
@@ -71,11 +71,11 @@ node $HVIGOR_PATH/node_modules/@ohos/hvigor/bin/hvigor.js --no-daemon assembleHa
 
 | | |
 |---|---|
-| ArkTS 编译和类型检查、NAPI 模块（C++）编译链接、打包未签名 HAP | ✅ 每次构建 |
+| ArkTS 编译和类型检查（ArkTS 严格规则）、NAPI 模块（C++，`-Wall -Werror`）编译链接、打包未签名 HAP | ✅ 每次构建 |
 | 协议逻辑对照 `docs/testvectors/ios-pairing.json`（Node 上用 `node:crypto` 模拟 cryptoFramework） | ✅ |
 | App 里打包的测试向量和 `docs/testvectors/` 一致 | ✅ |
 | 系统 cryptoFramework 的实际行为（空负载 GCM、PKCS#8 私钥导入、不在曲线上的点） | ❌ 要在真机上点 App 里的「协议自检」 |
-| ohosTest（hypium） | ❌ CI 没有 ohpm 装 hypium，只编译不了；用 DevEco Studio 跑 |
+| ohosTest（hypium）编译 | ✅（hypium 从 ohpm 公共仓库下载）；运行要真机，用 DevEco Studio |
 | 录屏、编码器输出格式（Annex B / CODEC_DATA）、长时任务、mDNS、连车机 | ❌ 要真机 |
 
 ## 已知限制和待真机确认

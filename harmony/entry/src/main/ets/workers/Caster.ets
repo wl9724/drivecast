@@ -32,6 +32,7 @@ class Caster {
   private ch: SecureChannel | null = null; // 认证之后才有
   private streaming: boolean = false; // 这条连接收到 HELLO 之后
   private hello: Hello | null = null; // 正在录屏的参数
+  private started: boolean = false; // 用户在系统确认框里允许了录屏
   private gen: number = 0; // 每次开始录屏加一，旧录屏还在队列里的回调作废
   private config: Uint8Array | null = null; // 编码器最近的 SPS/PPS
   private waitKey: boolean = true;
@@ -67,8 +68,10 @@ class Caster {
     } else if (m.cmd === 'found') {
       const found: Found[] = m.found ?? [];
       this.found = found;
-    } else if (m.cmd === 'stop') {
+    } else if (m.cmd === 'stop' && this.active) {
       this.finish('已停止投屏');
+    } else if (m.cmd === 'stop') {
+      this.post('stopped', '已停止投屏'); // 已经停了也回一声，UI 才能复位
     }
   }
 
@@ -161,7 +164,7 @@ class Caster {
           return;
         }
       }
-      c.fail('解密失败'); // 解密失败立刻断开
+      c.fail(raw.type === Msg.BYE ? '车机拒绝了连接：' + text(raw.payload) : '解密失败'); // 解密失败立刻断开
       return;
     }
     this.lastHeard = Date.now();
@@ -213,7 +216,7 @@ class Caster {
       if (csd !== null) {
         c.send(ch.seal(Msg.VIDEO_CONFIG, videoConfig(h.width, h.height, csd)));
       }
-      this.post('status', '正在投屏');
+      this.post('status', this.started ? '正在投屏' : '请在弹出的窗口里允许录屏');
     }
     this.needKey(true);
   }
@@ -223,6 +226,7 @@ class Caster {
       cast.stop();
     }
     this.hello = h;
+    this.started = false;
     this.config = null;
     this.gen++;
     const gen = this.gen;
@@ -253,8 +257,8 @@ class Caster {
         return; // 没连上车机时编码器照常跑，录屏不停
       }
       const key = value === 1;
-      // 不排队：发不过来就丢非关键帧，并且之后一直丢到下一个关键帧（P 帧缺了参考会花屏）
-      if (!key && (this.waitKey || c.inflight >= 2)) {
+      // 不排队：已有 2 帧在发就丢（关键帧放宽到 4），之后一直丢到下一个关键帧（P 帧缺了参考会花屏）
+      if (c.inflight >= (key ? 4 : 2) || (!key && this.waitKey)) {
         this.needKey(false);
         return;
       }
@@ -280,6 +284,7 @@ class Caster {
 
   private captureState(s: number): void {
     if (s === 0) {
+      this.started = true;
       this.post('status', '正在投屏');
     } else if (s === 1) {
       this.finish('没有允许录屏，已停止投屏');

@@ -62,6 +62,7 @@ struct Index {
 
   aboutToDisappear(): void {
     this.ds?.stopSearchingMDNS();
+    this.stopCasting(); // 页面没了就没人能点停止
   }
 
   build() {
@@ -260,8 +261,7 @@ struct Index {
   /** 录屏必须由用户在前台点按钮开始：系统会弹隐私确认框。 */
   private async toggle(): Promise<void> {
     if (this.casting) {
-      const m: ToWorker = { cmd: 'stop' };
-      this.caster?.postMessage(m); // Worker 停好后回 stopped
+      this.stopCasting();
       return;
     }
     const phoneId = this.store.phoneId(false);
@@ -292,8 +292,8 @@ struct Index {
     const w = new worker.ThreadWorker('entry/ets/workers/Caster.ets');
     w.onmessage = (e: MessageEvents) => this.fromWorker(e.data as FromWorker);
     w.onerror = (e: ErrorEvent) => {
-      const m: FromWorker = { type: 'stopped', text: '投屏线程出错：' + e.message };
-      this.fromWorker(m);
+      console.error('DriveCast worker: ' + e.message);
+      this.stopCasting(); // 停录屏、断开车机，Worker 回 stopped
     };
     this.caster = w;
     return w;
@@ -309,6 +309,12 @@ struct Index {
       this.status = m.text;
       this.keepAlive(false);
     }
+  }
+
+  /** Worker 停好后回 stopped，那时再停长时任务。 */
+  private stopCasting(): void {
+    const m: ToWorker = { cmd: 'stop' };
+    this.caster?.postMessage(m);
   }
 
   /** 长时任务（录制类）：切到导航 App 后进程不被挂起。 */
