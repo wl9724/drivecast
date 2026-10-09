@@ -32,7 +32,7 @@ iPhone 没有 USB 调试，反过来由 iPhone 上的 DriveCast 用系统的屏�
 
 要求：手机 Android 10 及以上（推荐 13 及以上，锁屏时也能显示）；车机 Android 5.0 及以上且支持 USB Host。
 
-1. 从 [Actions](../../actions) 最新一次成功构建下载 `drivecast-car-debug`，把 APK 装到车机上。手机上**不用装任何 App**。
+1. 从 [Releases](../../releases) 下载车机 APK（或 [Actions](../../actions) 里 CI 工作流最新一次成功构建的 `drivecast-car`），装到车机上。手机上**不用装任何 App**。
 2. 手机打开**开发者选项 → USB 调试**。小米还需打开"USB 调试（安全设置）"（要插 SIM 卡、登录小米账号，开启后重启手机），否则车机上点不动，车机会提示原因，画面不受影响。
 3. 用能传数据的 USB 线把手机连到车机，打开 DriveCast，会自动开始连接。
 4. 允许 USB 权限；手机弹出授权框时勾选"一律允许"并确认。
@@ -157,6 +157,9 @@ iPhone 端需要 macOS + Xcode 26 + [XcodeGen](https://github.com/yonaskolb/Xcod
 
 鸿蒙端在 Linux 上就能构建（公开的 OpenHarmony SDK + npm 上的 hvigor，不用华为账号），步骤见 [harmony/README.md](harmony/README.md)；
 也可以用 DevEco Studio（Windows / macOS）打开 `harmony/`。
+
+车机 APK 的发布签名：本仓库的 CI 用 Secrets 里的固定密钥（`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`，PKCS12 格式）
+签 release 包，所以新版能直接覆盖安装。本地或 fork 构建没有这些 Secrets，只能出 debug 包，不能覆盖安装正式发布的版本。
 
 ## 路线图
 

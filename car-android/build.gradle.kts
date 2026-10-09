@@ -11,9 +11,26 @@ android {
         applicationId = "org.drivecast.car"
         minSdk = 21 // 覆盖老旧后装大屏
         targetSdk = 34
-        versionCode = 2
+        // CI 用运行序号，保证每次发布都比上一次大，车机上能直接覆盖升级
+        versionCode = System.getenv("DRIVECAST_VERSION_CODE")?.toIntOrNull()?.plus(100) ?: 2
         versionName = "0.1.0"
     }
+
+    // 固定的发布签名：密钥只在 CI 的 Secrets 里，本地和 fork 构建没有它时只能出 debug 包
+    val keystore = System.getenv("DRIVECAST_KEYSTORE")
+    if (!keystore.isNullOrEmpty()) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(keystore)
+                storeType = "pkcs12"
+                storePassword = System.getenv("DRIVECAST_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("DRIVECAST_KEY_ALIAS")
+                keyPassword = System.getenv("DRIVECAST_KEYSTORE_PASSWORD") // PKCS12 的密钥密码和库密码相同
+            }
+        }
+        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
+    }
+    lint { checkReleaseBuilds = false }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

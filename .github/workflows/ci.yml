@@ -14,8 +14,34 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :protocol:test :car-android:testDebugUnitTest :car-android:assembleDebug
+      # 本仓库的构建用固定密钥签 release 包，升级时能直接覆盖安装；
+      # fork 和来自 fork 的 PR 拿不到 Secrets，退回 debug 包
+      - name: 准备签名密钥
+        id: key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.p12"
+            echo "path=$RUNNER_TEMP/release.p12" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 测试并打包
+        env:
+          DRIVECAST_KEYSTORE: ${{ steps.key.outputs.path }}
+          DRIVECAST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DRIVECAST_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DRIVECAST_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          if [ -n "$DRIVECAST_KEYSTORE" ]; then task=assembleRelease; dir=release; else task=assembleDebug; dir=debug; fi
+          ./gradlew :protocol:test :car-android:testDebugUnitTest :car-android:$task
+          mkdir -p out && cp car-android/build/outputs/apk/$dir/*.apk out/
+      - name: 检查签名证书
+        if: steps.key.outputs.path != ''
+        run: |
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs out/*.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
+          rm -f "$RUNNER_TEMP/release.p12"
       - uses: actions/upload-artifact@v4
         with:
-          name: drivecast-car-debug
-          path: car-android/build/outputs/apk/debug/*.apk
+          name: drivecast-car
+          path: out/*.apk
