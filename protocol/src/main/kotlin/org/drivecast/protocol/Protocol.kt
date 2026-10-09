@@ -120,20 +120,33 @@ class VideoFrame(val ptsUs: Long, val keyframe: Boolean, val data: ByteArray) {
     }
 }
 
+/** 一根手指：[id] 是车机 MotionEvent 的 pointerId，坐标是视频像素坐标。 */
+data class Pointer(val id: Int, val x: Int, val y: Int)
+
 /**
- * 车 → 手：触摸，坐标是视频像素坐标。action 与 MotionEvent 一致（0 按下 / 1 抬起 / 2 移动 / 3 取消）。
- * ponytail: v1 只传单指（pointerId 恒为 0），双指缩放地图要扩展成多指。
+ * 车 → 手：一次触摸事件，带上当前按着的所有手指，对应安卓的一个 MotionEvent。
+ * action 与 MotionEvent.getActionMasked 一致：0 按下 / 1 抬起 / 2 移动 / 3 取消 /
+ * 5 又一根手指按下 / 6 某根手指抬起（其余手指还按着）。[actionId] 是按下或抬起的那根手指的 id。
+ * 布局：action u8 · actionId u8 · count u8 · [id u8 · x u16 · y u16] × count
  */
-data class Touch(val action: Int, val x: Int, val y: Int) {
-    fun encode(): ByteArray = ByteBuffer.allocate(6).put(action.toByte()).put(0)
-        .putShort(x.toShort()).putShort(y.toShort()).array()
+data class Touch(val action: Int, val actionId: Int, val pointers: List<Pointer>) {
+    fun encode(): ByteArray {
+        val b = ByteBuffer.allocate(3 + 5 * pointers.size)
+            .put(action.toByte()).put(actionId.toByte()).put(pointers.size.toByte())
+        pointers.forEach { b.put(it.id.toByte()).putShort(it.x.toShort()).putShort(it.y.toShort()) }
+        return b.array()
+    }
 
     companion object {
+        const val MAX_POINTERS = 10
+
         fun decode(p: ByteArray): Touch {
             val b = ByteBuffer.wrap(p)
             val action = b.u8()
-            b.u8() // pointerId
-            return Touch(action, b.u16(), b.u16())
+            val actionId = b.u8()
+            val count = b.u8()
+            if (count !in 1..MAX_POINTERS || p.size != 3 + 5 * count) throw IOException("TOUCH 格式不对")
+            return Touch(action, actionId, List(count) { Pointer(b.u8(), b.u16(), b.u16()) })
         }
     }
 }

@@ -33,6 +33,8 @@ import org.drivecast.car.iphone.SecureLink
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
+import org.drivecast.protocol.Pointer
+import org.drivecast.protocol.Touch
 import org.drivecast.protocol.Msg
 import java.io.Closeable
 import java.io.IOException
@@ -413,15 +415,23 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         )
     }
 
+    /** 每个事件带上所有按着的手指，换算成视频像素坐标（双指缩放地图等）。 */
     private fun onScreenTouch(v: View, e: MotionEvent): Boolean {
         val s = session ?: return false
-        // ponytail: v1 只传单指（忽略第二根手指的按下/抬起），双指缩放要扩展协议
         if (e.actionMasked !in TOUCH_ACTIONS) return true
         val w = screen.width / 16 * 16
         val h = screen.height / 16 * 16
-        val x = (e.getX(0) * w / v.width).toInt().coerceIn(0, w - 1)
-        val y = (e.getY(0) * h / v.height).toInt().coerceIn(0, h - 1)
-        s.touch(e.actionMasked, x, y)
+        val n = minOf(e.pointerCount, Touch.MAX_POINTERS)
+        // 超出上限的手指不发；它的按下/抬起也就不发，手机端看到的手指数前后一致
+        if (e.actionIndex >= n) return true
+        val pointers = List(n) { i ->
+            Pointer(
+                e.getPointerId(i),
+                (e.getX(i) * w / v.width).toInt().coerceIn(0, w - 1),
+                (e.getY(i) * h / v.height).toInt().coerceIn(0, h - 1),
+            )
+        }
+        s.touch(Touch(e.actionMasked, e.getPointerId(e.actionIndex), pointers))
         return true
     }
 
@@ -451,6 +461,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         val TOUCH_ACTIONS = setOf(
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_CANCEL,
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP,
         )
 
         /** 连接后先打开第一个。 */

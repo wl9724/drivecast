@@ -25,7 +25,8 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** 投屏会话跑在上面的帧通道：安卓手机是 ADB 流上的明文帧，iPhone 是 TCP 上的加密帧。 */
 interface FrameLink : Closeable {
@@ -86,7 +87,8 @@ class CastSession(
     private val hello: Hello,
     private val log: (String) -> Unit,
 ) : Closeable {
-    private val pendingMove = AtomicReference<Touch?>(null)
+    private val touches = ConcurrentLinkedQueue<Touch>()
+    private val draining = AtomicBoolean(false)
     private val sender = Executors.newSingleThreadScheduledExecutor()
     private var decoder: MediaCodec? = null
     private var waitKeyframe = false
@@ -117,14 +119,28 @@ class CastSession(
     }
 
     /**
-     * 移动事件合并发送：无线时每帧都要等一次往返，60~120Hz 的 MOVE 逐个发会越积越多，
-     * 拖地图跟不上手指。只保留最新的一个，按下/抬起照常按顺序发。
+     * 触摸按顺序发送，只把连续的移动事件合并成最后一个：无线时每帧都要等一次往返，
+     * 60~120Hz 的 MOVE 逐个发会越积越多，拖地图跟不上手指。按下/抬起（含第二根手指）
+     * 不能和移动事件调换顺序，否则手机收到的手指数前后对不上，系统会丢掉整个手势。
      */
-    fun touch(action: Int, x: Int, y: Int) {
+    fun touch(t: Touch) {
         if (!control) return
-        if (action != MotionEvent.ACTION_MOVE) return send(Msg.TOUCH, Touch(action, x, y).encode())
-        if (pendingMove.getAndSet(Touch(action, x, y)) != null) return // 已有一个在排队，替换掉即可
-        runCatching { sender.execute { pendingMove.getAndSet(null)?.let { write(Msg.TOUCH, it.encode()) } } }
+        touches.add(t)
+        if (draining.compareAndSet(false, true)) runCatching { sender.execute(::drainTouches) }
+    }
+
+    /** 只在 sender 线程上运行。 */
+    private fun drainTouches() {
+        draining.set(false) // 先放开：之后到的事件要么被这一轮取到，要么再排一轮
+        var last: Touch? = null
+        while (true) {
+            val t = touches.poll() ?: break
+            if (last != null && !(last.action == MotionEvent.ACTION_MOVE && t.action == MotionEvent.ACTION_MOVE)) {
+                write(Msg.TOUCH, last.encode())
+            }
+            last = t
+        }
+        last?.let { write(Msg.TOUCH, it.encode()) }
     }
 
     fun key(keycode: Int) {
