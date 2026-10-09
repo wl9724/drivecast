@@ -124,8 +124,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             addView(button("开启无线") { background { enableWireless() } })
             addView(button("关闭无线") { background { disableWireless() } })
             addView(pauseButton)
-            addView(button("添加 iPhone") { addIphone() })
-            addView(button("清除 iPhone 配对") { clearIphones() })
+            addView(button("添加 iPhone/鸿蒙") { addIphone() })
+            addView(button("清除 iPhone/鸿蒙 配对") { clearIphones() })
             addView(status)
         }
         screen = SurfaceView(this).apply {
@@ -150,7 +150,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         iphoneServer = try {
             IphoneServer(this, prefs, pairing, ::log, ::onIphone)
         } catch (e: Exception) {
-            log("iPhone 服务启动失败：${e.message ?: e}")
+            log("iPhone/鸿蒙 服务启动失败：${e.message ?: e}")
             null
         }
 
@@ -324,14 +324,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             else listOfNotNull(iphone, session, adb, connecting).also { iphone = link }
         }
         // 只有本线程用过这条新连接，加密计数器不会乱。iPhone 收到后退避重试，等那台停了再连上
-        if (busy) runCatching { link.write(Msg.BYE, "车机正在显示另一台 iPhone".toByteArray(Charsets.UTF_8)) }
+        if (busy) runCatching { link.write(Msg.BYE, "车机正在显示另一台手机".toByteArray(Charsets.UTF_8)) }
         closing.forEach { runCatching { it.close() } }
-        if (paused) log("iPhone 想要投屏：先点\"连接\"")
+        if (paused) log("手机想要投屏：先点\"连接\"")
         wake()
     }
 
     private fun addIphone() {
-        if (iphoneServer == null) return log("iPhone 服务没有启动")
+        if (iphoneServer == null) return log("iPhone/鸿蒙 服务没有启动")
         pairing.open()
         pairingView.postDelayed(::showPairing, PairingMode.WINDOW_MS + 500) // 到期后收起
         log("配对模式已打开 2 分钟。车机地址：${addresses().joinToString(" ")}")
@@ -346,7 +346,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             pairingView.text = "配对码\n%06d".format(code)
         } else if (pairing.active) {
             pairingView.textSize = 24f
-            pairingView.text = "在 iPhone 的 DriveCast 里添加车机\n\n找不到车机时手动输入：\n" +
+            pairingView.text = "在 iPhone / 鸿蒙手机的 DriveCast 里添加车机\n\n找不到车机时手动输入：\n" +
                 addresses().joinToString("\n") + "\n\n（点这里取消）"
         }
     }
@@ -360,7 +360,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             listOfNotNull(iphone, session?.takeIf { it.link is SecureLink }).also { iphone = null }
         }
         closing.forEach { runCatching { it.close() } }
-        log("已清除所有 iPhone 的配对")
+        log("已清除所有 iPhone / 鸿蒙手机的配对")
     }
 
     private fun enableWireless() {

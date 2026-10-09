@@ -106,7 +106,7 @@ class CastSession(
             when (f.type) {
                 Msg.HELLO_ACK -> HelloAck.decode(f.payload).displayId.let {
                     control = it >= 0
-                    log(if (control) "虚拟屏 $it 已创建" else "iPhone 已连接（只能显示，不能在车机上操作）")
+                    log(if (control) "虚拟屏 $it 已创建" else "手机已连接（只能显示，不能在车机上操作）")
                 }
                 Msg.VIDEO_CONFIG -> startDecoder(VideoConfig.decode(f.payload))
                 Msg.VIDEO_FRAME -> decode(VideoFrame.decode(f.payload))

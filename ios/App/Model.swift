@@ -43,7 +43,7 @@ final class Model: ObservableObject {
         browser.start(queue: .main)
     }
 
-    /// 车机上要先点"添加 iPhone"（车机只在配对模式下接受配对）。
+    /// 车机上要先点"添加 iPhone/鸿蒙"（车机只在配对模式下接受配对）。
     func pair(_ endpoint: NWEndpoint, carName: String, deviceName: String) {
         cancel()
         guard let phoneId = Store.phoneId(create: true) else {

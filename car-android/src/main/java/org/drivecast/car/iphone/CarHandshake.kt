@@ -15,7 +15,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * "添加 iPhone" 打开后的配对窗口：2 分钟内有效、一次只配一台、每次尝试都换新码、失败 3 次就关闭。
+ * "添加 iPhone/鸿蒙" 打开后的配对窗口：2 分钟内有效、一次只配一台、每次尝试都换新码、失败 3 次就关闭。
  * [onChange] 在配对码出现或消失、窗口开关时回调，用来刷新车机屏幕上的提示。
  */
 class PairingMode(private val onChange: () -> Unit = {}, private val random: SecureRandom = SecureRandom()) {
@@ -113,14 +113,14 @@ class CarHandshake(
             Msg.AUTH_RESPONSE -> {
                 if (f.payload.size != AUTH_LEN) bye("AUTH_RESPONSE 格式不对")
                 val phoneId = f.payload.copyOf(Pairing.ID_LEN)
-                val ltk = ltkOf(phoneId) ?: bye("这台 iPhone 没有和车机配对，请在 iPhone 的 DriveCast 里重新添加车机")
+                val ltk = ltkOf(phoneId) ?: bye("这台手机没有和车机配对，请在手机的 DriveCast 里重新添加车机")
                 phoneId to verify(ltk, phoneId, nonceC, f.payload)
             }
             Msg.PAIR_START -> {
                 pair(input, f.payload, nonceC)
                 null
             }
-            Msg.BYE -> throw IOException("iPhone 断开：${String(f.payload, Charsets.UTF_8)}")
+            Msg.BYE -> throw IOException("手机断开：${String(f.payload, Charsets.UTF_8)}")
             else -> bye("意外的消息 ${f.type}")
         }
     }
@@ -136,8 +136,8 @@ class CarHandshake(
         } catch (e: IOException) {
             bye(e.message!!)
         }
-        // 只在用户点了"添加 iPhone"之后才配对：否则陌生人可以随时往司机的屏幕上弹配对码
-        val code = pairing.begin(abort) ?: bye("车机不在配对模式，或正在和另一台 iPhone 配对：请先在车机上点\"添加 iPhone\"")
+        // 只在用户点了"添加 iPhone/鸿蒙"之后才配对：否则陌生人可以随时往司机的屏幕上弹配对码
+        val code = pairing.begin(abort) ?: bye("车机不在配对模式，或正在和另一台手机配对：请先在车机上点\"添加 iPhone/鸿蒙\"")
         var ok = false
         try {
             setTimeout(PAIRING_TIMEOUT_MS)
@@ -181,7 +181,7 @@ class CarHandshake(
 
     private fun read(input: DataInputStream, type: Int, len: Int): ByteArray {
         val f = input.readFrame(MAX_HANDSHAKE)
-        if (f.type == Msg.BYE) throw IOException("iPhone 断开：${String(f.payload, Charsets.UTF_8)}")
+        if (f.type == Msg.BYE) throw IOException("手机断开：${String(f.payload, Charsets.UTF_8)}")
         if (f.type != type || f.payload.size != len) bye("意外的消息 ${f.type}")
         return f.payload
     }

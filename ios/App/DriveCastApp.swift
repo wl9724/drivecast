@@ -61,7 +61,7 @@ struct ContentView: View {
                 } header: {
                     Text("附近的车机")
                 } footer: {
-                    Text("先在车机的 DriveCast 里点「添加 iPhone」，再点这里的车机，然后输入车机上显示的配对码。")
+                    Text("先在车机的 DriveCast 里点「添加 iPhone/鸿蒙」，再点这里的车机，然后输入车机上显示的配对码。")
                 }
                 Section {
                     TextField("例如 192.168.43.1", text: $manual)
@@ -125,7 +125,7 @@ struct PairSheet: View {
                     Text(message)
                 case .failed(let message):
                     Text(message).foregroundStyle(.red)
-                    Text("请在车机上重新点「添加 iPhone」后再试。").foregroundStyle(.secondary)
+                    Text("请在车机上重新点「添加 iPhone/鸿蒙」后再试。").foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("配对")

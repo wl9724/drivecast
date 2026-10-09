@@ -28,7 +28,7 @@ class SampleHandler: RPBroadcastSampleHandler {
             return finishBroadcastWithError(Self.error("App Group 不可用（安装时签名工具改了名或去掉了），读不到配对信息。请打开 DriveCast App 查看说明"))
         }
         guard let id = Store.phoneId(create: false), !Store.cars.isEmpty else {
-            return finishBroadcastWithError(Self.error("还没有和车机配对。请先在车机上点「添加 iPhone」，再在 DriveCast App 里配对"))
+            return finishBroadcastWithError(Self.error("还没有和车机配对。请先在车机上点「添加 iPhone/鸿蒙」，再在 DriveCast App 里配对"))
         }
         q.sync {
             phoneId = id

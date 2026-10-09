@@ -63,7 +63,7 @@ class IphoneServer(
     private val registration = object : NsdManager.RegistrationListener {
         override fun onServiceRegistered(info: NsdServiceInfo) {}
         override fun onRegistrationFailed(info: NsdServiceInfo, error: Int) =
-            log("Bonjour 广播失败（$error），iPhone 上请手动输入车机地址")
+            log("Bonjour 广播失败（$error），手机上请手动输入车机地址")
         override fun onServiceUnregistered(info: NsdServiceInfo) {}
         override fun onUnregistrationFailed(info: NsdServiceInfo, error: Int) {}
     }
@@ -122,7 +122,7 @@ class IphoneServer(
             }
             if (authed == null) {
                 s.close()
-                log("iPhone 已配对，在 iPhone 上开始投屏即可")
+                log("手机已配对，在手机上开始投屏即可")
                 return
             }
             // 投屏时视频至少每 100ms 一帧，这么久收不到任何数据就是断了
@@ -132,7 +132,7 @@ class IphoneServer(
             s.close() // iPhone 找车机时会探测端口，连上就断，不用提示
         } catch (e: Exception) {
             s.close()
-            log("iPhone 连接失败：${e.message ?: e}")
+            log("手机连接失败：${e.message ?: e}")
         }
     }
 
