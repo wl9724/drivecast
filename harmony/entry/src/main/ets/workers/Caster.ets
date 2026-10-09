@@ -226,7 +226,7 @@ class Caster {
     this.config = null;
     this.gen++;
     const gen = this.gen;
-    const err = cast.start(h.width, h.height, h.fps, h.bitrate,
+    const err: number = cast.start(h.width, h.height, h.fps, h.bitrate,
       (kind: number, value: number, data: ArrayBuffer, pts: number) => {
         if (gen === this.gen) {
           this.onNative(kind, value, data, pts);

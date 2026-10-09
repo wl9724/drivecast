@@ -95,7 +95,7 @@ export class Conn {
     }
     this.inflight++;
     const buf = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data : data.slice();
-    this.chain = this.chain.then(() => this.tcp.send({ data: buf.buffer as ArrayBuffer })).then(() => {
+    this.chain = this.chain.then((): Promise<void> => this.tcp.send({ data: buf.buffer as ArrayBuffer })).then(() => {
       this.inflight--;
     }, (e: BusinessError) => {
       this.inflight--;
@@ -120,7 +120,7 @@ export class Conn {
     };
     this.onError = (r: string) => {
     };
-    this.chain.then(() => this.tcp.close()).catch(() => {
+    this.chain.then((): Promise<void> => this.tcp.close()).catch(() => {
     });
   }
 
