@@ -1,5 +1,6 @@
 package org.drivecast.car
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.PendingIntent
@@ -7,11 +8,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
@@ -28,6 +32,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.Closeable
+import java.io.IOException
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import org.drivecast.car.adb.AdbConnection
 import org.drivecast.car.adb.AdbKey
 import org.drivecast.car.adb.UsbTransport
@@ -38,14 +47,9 @@ import org.drivecast.car.wireless.AdbMdns
 import org.drivecast.car.wireless.PhoneFinder
 import org.drivecast.car.wireless.WirelessAdb
 import org.drivecast.protocol.Hello
+import org.drivecast.protocol.Msg
 import org.drivecast.protocol.Pointer
 import org.drivecast.protocol.Touch
-import org.drivecast.protocol.Msg
-import java.io.Closeable
-import java.io.IOException
-import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 
 /**
  * 左侧一列按钮，右侧是手机虚拟屏的画面。
@@ -57,6 +61,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var screen: SurfaceView
     private lateinit var status: TextView
     private lateinit var pauseButton: Button
+    private lateinit var btButton: Button
     private lateinit var pairingView: TextView
     private val pairing = PairingMode(onChange = { runOnUiThread(::showPairing) })
     private var iphoneServer: IphoneServer? = null
@@ -131,6 +136,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         status = TextView(this).apply { setTextColor(Color.LTGRAY); textSize = 12f }
         pauseButton = button("断开") { togglePause() }
+        btButton = button(btLabel()) { toggleBtAutoOpen() }
         val side = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16, 16, 16, 16)
@@ -142,6 +148,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             addView(pauseButton)
             addView(button("添加 iPhone/鸿蒙") { addIphone() })
             addView(button("清除 iPhone/鸿蒙 配对") { clearIphones() })
+            addView(btButton)
             addView(status)
         }
         screen = SurfaceView(this).apply {
@@ -170,10 +177,37 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             null
         }
         tlsPhones = runCatching { AdbMdns(this, AdbMdns.CONNECT) }.getOrNull()
+        if (prefs.btAutoOpen) askBluetoothPermission()
 
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, RECEIVER_NOT_EXPORTED)
         else registerReceiver(permissionReceiver, filter)
+    }
+
+    private fun btLabel() = if (prefs.btAutoOpen) "蓝牙自动打开：开" else "蓝牙自动打开：关"
+
+    private fun toggleBtAutoOpen() {
+        prefs.btAutoOpen = !prefs.btAutoOpen
+        btButton.text = btLabel()
+        if (prefs.btAutoOpen) {
+            askBluetoothPermission()
+            askOverlayPermission()
+        }
+    }
+
+    /** Android 12+：没有"附近的设备"权限收不到蓝牙连接广播。 */
+    private fun askBluetoothPermission() {
+        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), REQ_BLUETOOTH)
+        }
+    }
+
+    /** Android 10+：后台的 App 不能自己打开界面，除非允许"显示在其他应用上层"。只在用户打开开关时引导一次。 */
+    private fun askOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= 29 && !Settings.canDrawOverlays(this)) {
+            tell("请允许 DriveCast \"显示在其他应用上层\"，否则蓝牙连上时打不开")
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
+        }
     }
 
     /** 插上手机时系统通过 USB_DEVICE_ATTACHED 拉起本页面（singleTask），并已授予 USB 权限。 */
@@ -576,6 +610,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun log(line: String) = runOnUiThread { status.text = line }
 
     private companion object {
+        const val REQ_BLUETOOTH = 1
         const val ACTION_USB_PERMISSION = "org.drivecast.car.USB_PERMISSION"
         const val RETRY_MS = 3_000L
 

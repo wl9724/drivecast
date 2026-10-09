@@ -9,6 +9,10 @@
     <!-- iPhone：Bonjour 广播 _drivecast._tcp 要拿组播锁 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 手机蓝牙连上时自动打开：收 ACL_CONNECTED 广播；Android 10+ 从后台打开界面要"显示在其他应用上层" -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:label="DriveCast"
@@ -30,5 +34,12 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
         </activity>
+        <receiver
+            android:name=".BluetoothLauncher"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

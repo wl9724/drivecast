@@ -26,6 +26,16 @@ class Prefs(context: Context) {
         get() = sp.getString("paired_phones", "").orEmpty().split(',').filter { it.isNotEmpty() }
         set(v) = sp.edit().putString("paired_phones", v.distinct().take(8).joinToString(",")).apply()
 
+    /** 手机蓝牙连上时自动打开 DriveCast。 */
+    var btAutoOpen: Boolean
+        get() = sp.getBoolean("bt_auto_open", true)
+        set(v) = sp.edit().putBoolean("bt_auto_open", v).apply()
+
+    /** 上次因蓝牙自动打开的时间，用来防止行车中反复弹出。 */
+    var btOpenedAt: Long
+        get() = sp.getLong("bt_opened_at", 0)
+        set(v) = sp.edit().putLong("bt_opened_at", v).apply()
+
     fun iphoneLtk(phoneId: ByteArray): ByteArray? =
         iphones.getString(phoneId.hex(), null)?.substringBefore(' ')?.unhex()
 
