@@ -1,0 +1,7 @@
+oh_modules/
+.hvigor/
+build/
+.cxx/
+.preview/
+local.properties
+oh-package-lock.json5

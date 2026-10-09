@@ -1,0 +1,40 @@
+name: HarmonyOS
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  harmony:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: App 里打包的测试向量和 docs/testvectors 一致
+        run: diff docs/testvectors/ios-pairing.json harmony/entry/src/main/resources/rawfile/ios-pairing.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 协议自检（Node 上模拟 cryptoFramework）
+        run: harmony/tools/selftest-node.sh
+      # 公开的 OpenHarmony SDK + npm 上的 hvigor，不用登录华为账号（和 Servo 的做法一样）
+      - uses: openharmony-rs/setup-ohos-sdk@v1.0.1
+        with:
+          version: "6.0"
+          fixup-path: true
+      - name: 安装 hvigor
+        run: |
+          mkdir ~/hvigor && cd ~/hvigor
+          echo "@ohos:registry=https://repo.harmonyos.com/npm/" > .npmrc
+          npm install --no-audit --no-fund "@ohos/hvigor@5" "@ohos/hvigor-ohos-plugin@5"
+          echo "HVIGOR_PATH=$PWD" >> "$GITHUB_ENV"
+      - name: 构建未签名 HAP（ArkTS 类型检查 + NAPI 模块编译）
+        working-directory: harmony
+        run: |
+          export NODE_PATH="$HVIGOR_PATH/node_modules"
+          node "$HVIGOR_PATH/node_modules/@ohos/hvigor/bin/hvigor.js" --no-daemon assembleHap \
+            -p product=default -p buildMode=release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DriveCast-harmony-unsigned-hap
+          path: harmony/entry/build/default/outputs/default/*.hap
+          if-no-files-found: error

@@ -1,0 +1,23 @@
+{
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        // 用公开的 OpenHarmony SDK 构建（不用登录华为账号），装到鸿蒙 NEXT 手机上时用鸿蒙证书签名
+        "compileSdkVersion": 20,
+        "compatibleSdkVersion": 20,
+        "targetSdkVersion": 20,
+        "runtimeOS": "OpenHarmony"
+      }
+    ],
+    "buildModeSet": [{ "name": "debug" }, { "name": "release" }]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [{ "name": "default", "applyToProducts": ["default"] }]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "把手机屏幕投到安卓车机上" },
+    { "name": "ability_desc", "value": "DriveCast" },
+    { "name": "app_name", "value": "DriveCast" },
+    { "name": "reason_network", "value": "通过 Wi-Fi 连接车机" },
+    { "name": "reason_background", "value": "切到导航后继续投屏" }
+  ]
+}

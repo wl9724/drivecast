@@ -1,0 +1,6 @@
+{
+  "name": "libcast.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "DriveCast 录屏 + H.264 编码（NAPI）"
+}

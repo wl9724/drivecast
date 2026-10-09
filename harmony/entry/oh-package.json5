@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "DriveCast 鸿蒙 NEXT 端",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libcast.so": "file:./src/main/cpp/types/libcast"
+  }
+}
