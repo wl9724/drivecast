@@ -54,6 +54,7 @@ export class Conn {
   private buf: Uint8Array = new Uint8Array(0);
   private chain: Promise<void> = Promise.resolve();
   private closed: boolean = false;
+  private dead: boolean = false; // 连接已失败：排在后面的帧不再发（send 可能要阻塞很久才报错）
 
   constructor(ep: Endpoint) {
     this.ep = ep;
@@ -95,7 +96,8 @@ export class Conn {
     }
     this.inflight++;
     const buf = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data : data.slice();
-    this.chain = this.chain.then((): Promise<void> => this.tcp.send({ data: buf.buffer as ArrayBuffer })).then(() => {
+    this.chain = this.chain.then((): Promise<void> => this.dead ? Promise.resolve() :
+      this.tcp.send({ data: buf.buffer as ArrayBuffer })).then(() => {
       this.inflight--;
     }, (e: BusinessError) => {
       this.inflight--;
@@ -105,6 +107,7 @@ export class Conn {
   }
 
   fail(why: string): void {
+    this.dead = true; // 主动 close 之后发 BYE 失败也算
     if (this.closed) {
       return;
     }

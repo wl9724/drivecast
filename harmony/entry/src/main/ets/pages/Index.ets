@@ -279,7 +279,7 @@ struct Index {
     }
     const m: ToWorker = {
       cmd: 'start', phoneId: toHex(phoneId), cars: cars, last: this.store.addresses(), manual: this.manual,
-      found: this.foundPaired()
+      found: this.foundPaired(), hello: this.store.hello
     };
     this.casterWorker().postMessage(m);
   }
@@ -304,6 +304,7 @@ struct Index {
       this.status = m.text;
     } else if (m.type === 'good') {
       this.store.remember(m.text);
+      this.store.hello = m.hello ?? '';
     } else if (m.type === 'stopped') {
       this.casting = false;
       this.status = m.text;

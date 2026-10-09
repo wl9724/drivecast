@@ -4,7 +4,7 @@ import { Conn, gateway, wifiNet } from '../core/Conn';
 import { SecureChannel, authenticate, random } from '../core/Crypto';
 import {
   CAR_PORT, CarKey, Endpoint, Found, Frame, FromWorker, Hello, MAGIC, MAX_INCOMING, Msg, PHONE_WATCHDOG_MS, ToWorker,
-  hex, helloAck, text, utf8, videoConfig, videoFrame
+  hex, helloAck, text, toHex, utf8, videoConfig, videoFrame
 } from '../core/Proto';
 
 // 投屏 Worker：找到已配对的车机，认证后用加密连接把录屏的 H.264 发过去，断了就退避重连。
@@ -64,6 +64,16 @@ class Caster {
           c.fail('车机没有响应');
         }
       }, 1000);
+      // 知道车机尺寸就趁用户还在点按钮时开始录屏（弹确认框），不等连上车机
+      let h: Hello | null = null;
+      try {
+        h = Hello.parse(hex(m.hello ?? ''));
+      } catch (e) {
+        h = null; // 刚配对完还没存过（这时车机开着、用户在 App 里）或协议版本变了：等车机的 HELLO 再录屏
+      }
+      if (h !== null) {
+        this.startCapture(h);
+      }
       this.connect();
     } else if (m.cmd === 'found') {
       const found: Found[] = m.found ?? [];
@@ -206,7 +216,7 @@ class Caster {
     this.streaming = true;
     this.backoff = 1;
     this.rejected = 0;
-    this.post('good', c.ep.toString());
+    this.post('good', c.ep.toString(), toHex(p));
     const cur = this.hello;
     if (cur === null || cur.width !== h.width || cur.height !== h.height) {
       // ponytail: 车机换了分辨率只能重开录屏，会再弹一次确认框；同一台车机不会变
@@ -285,7 +295,8 @@ class Caster {
   private captureState(s: number): void {
     if (s === 0) {
       this.started = true;
-      this.post('status', '正在投屏');
+      cast.setMaxFps(this.hello?.fps ?? 30);
+      this.post('status', this.streaming ? '正在投屏' : '已允许录屏，正在连接车机…');
     } else if (s === 1) {
       this.finish('没有允许录屏，已停止投屏');
     } else if (s === 2) {
@@ -337,8 +348,8 @@ class Caster {
     this.post('stopped', why);
   }
 
-  private post(type: string, t: string): void {
-    const m: FromWorker = { type: type, text: t };
+  private post(type: string, t: string, hello?: string): void {
+    const m: FromWorker = { type: type, text: t, hello: hello };
     port.postMessage(m);
   }
 }

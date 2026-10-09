@@ -223,10 +223,12 @@ export interface ToWorker {
   last?: string[];
   manual?: string;
   found?: Found[];
+  hello?: string; // 上次车机 HELLO 的负载（十六进制）：有就点按钮时立刻开始录屏，不等连上车机
 }
 
-/** type：status（状态文字）/ good（连上的地址）/ stopped（投屏结束，text 是原因） */
+/** type：status（状态文字）/ good（连上的地址，hello 是这次 HELLO 的负载）/ stopped（投屏结束，text 是原因） */
 export interface FromWorker {
   type: string;
   text: string;
+  hello?: string;
 }

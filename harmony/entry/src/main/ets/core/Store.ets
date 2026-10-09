@@ -79,6 +79,7 @@ export class Store {
     car.id = carIdHex;
     car.name = name;
     this.setCars(this.cars().filter((c: PairedCar) => c.id !== carIdHex).concat([car]));
+    this.put('hello', ''); // 新车机尺寸未知：第一次投屏等它的 HELLO 再录屏，免得按旧尺寸录了又重开、弹两次确认框
   }
 
   forget(carIdHex: string): void {
@@ -97,6 +98,15 @@ export class Store {
 
   remember(addr: string): void {
     this.put('addresses', JSON.stringify([addr].concat(this.addresses().filter((a: string) => a !== addr)).slice(0, 4)));
+  }
+
+  /** 上次车机 HELLO 的负载（十六进制）：知道车机尺寸，点开始投屏时就能马上录屏（弹确认框）。 */
+  get hello(): string {
+    return this.prefs.getSync('hello', '') as string;
+  }
+
+  set hello(v: string) {
+    this.put('hello', v);
   }
 
   /** 用户手动输入的车机地址，找车的最后一步。 */

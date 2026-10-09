@@ -136,9 +136,8 @@ void OnOutput(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void *) {
         }
         bool key = idr || (a.flags & AVCODEC_BUFFER_FLAGS_SYNC_FRAME);
         if (!key && !rest.empty() && (g.dropping || g.queued >= MAX_QUEUED)) {
-            if (!g.dropping.exchange(true)) {
-                Post(GAP, 0); // ArkTS 收到后请求关键帧
-            }
+            g.dropping = true;
+            Post(GAP, 0); // 每丢一帧都告诉 ArkTS：它限速每秒请求一次关键帧，被限速的那次之后还会再要
         } else if (!rest.empty()) {
             g.dropping = false;
             g.queued++;
@@ -257,9 +256,6 @@ int32_t Open(napi_env env, napi_value cb, int32_t w, int32_t h, int32_t fps, int
     if (err == AV_SCREEN_CAPTURE_ERR_OK) {
         err = OH_AVScreenCapture_StartScreenCaptureWithSurface(g.cap, g.win); // 系统弹隐私确认框
     }
-    if (err == AV_SCREEN_CAPTURE_ERR_OK) {
-        OH_AVScreenCapture_SetMaxVideoFrameRate(g.cap, fps > 0 ? fps : 30); // 系统最高 60 帧，按车机要的省电
-    }
     return err;
 }
 
@@ -300,6 +296,16 @@ napi_value RequestKeyframe(napi_env env, napi_callback_info) {
     return nullptr;
 }
 
+// setMaxFps(fps)：系统最高 60 帧，按车机要的限。录屏开始（STATE 0）之后才能设，之前设会失败
+napi_value SetMaxFps(napi_env env, napi_callback_info info) {
+    napi_value argv[1];
+    int32_t fps = 0;
+    if (g.cap != nullptr && Args(env, info, 1, argv) && napi_get_value_int32(env, argv[0], &fps) == napi_ok) {
+        OH_AVScreenCapture_SetMaxVideoFrameRate(g.cap, fps > 0 ? fps : 30);
+    }
+    return nullptr;
+}
+
 napi_value Stop(napi_env env, napi_callback_info) {
     Close();
     return nullptr;
@@ -309,6 +315,7 @@ napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor d[] = {
         {"start", nullptr, Start, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"requestKeyframe", nullptr, RequestKeyframe, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setMaxFps", nullptr, SetMaxFps, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stop", nullptr, Stop, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(d) / sizeof(d[0]), d);
