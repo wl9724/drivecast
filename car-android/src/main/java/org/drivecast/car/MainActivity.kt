@@ -177,14 +177,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             null
         }
         tlsPhones = runCatching { AdbMdns(this, AdbMdns.CONNECT) }.getOrNull()
-        if (prefs.btAutoOpen) askBluetoothPermission()
+        if (prefs.btAutoOpen) {
+            askBluetoothPermission()
+            if (!prefs.overlayAsked) {
+                prefs.overlayAsked = true
+                askOverlayPermission()
+            }
+        }
 
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, RECEIVER_NOT_EXPORTED)
         else registerReceiver(permissionReceiver, filter)
     }
 
-    private fun btLabel() = if (prefs.btAutoOpen) "蓝牙自动打开：开" else "蓝牙自动打开：关"
+    /** 开着但缺权限时标出来，免得看起来开着、实际不起作用；点一下关掉，再点打开会重新申请。 */
+    private fun btLabel() = when {
+        !prefs.btAutoOpen -> "蓝牙自动打开：关"
+        Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
+            Build.VERSION.SDK_INT >= 29 && !Settings.canDrawOverlays(this) -> "蓝牙自动打开：开（未授权）"
+        else -> "蓝牙自动打开：开"
+    }
 
     private fun toggleBtAutoOpen() {
         prefs.btAutoOpen = !prefs.btAutoOpen
@@ -208,6 +220,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             tell("请允许 DriveCast \"显示在其他应用上层\"，否则蓝牙连上时打不开")
             runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        btButton.text = btLabel() // 从权限框或设置页回来时刷新
     }
 
     /** 插上手机时系统通过 USB_DEVICE_ATTACHED 拉起本页面（singleTask），并已授予 USB 权限。 */

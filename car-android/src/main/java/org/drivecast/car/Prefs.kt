@@ -31,10 +31,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("bt_auto_open", true)
         set(v) = sp.edit().putBoolean("bt_auto_open", v).apply()
 
-    /** 上次因蓝牙自动打开的时间，用来防止行车中反复弹出。 */
-    var btOpenedAt: Long
-        get() = sp.getLong("bt_opened_at", 0)
-        set(v) = sp.edit().putLong("bt_opened_at", v).apply()
+    /** 已经引导过一次"显示在其他应用上层"：默认开着的功能，第一次打开 App 时问，之后不再每次跳设置页。 */
+    var overlayAsked: Boolean
+        get() = sp.getBoolean("overlay_asked", false)
+        set(v) = sp.edit().putBoolean("overlay_asked", v).apply()
 
     fun iphoneLtk(phoneId: ByteArray): ByteArray? =
         iphones.getString(phoneId.hex(), null)?.substringBefore(' ')?.unhex()
