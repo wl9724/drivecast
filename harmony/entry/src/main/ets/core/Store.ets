@@ -89,6 +89,7 @@ export class Store {
       // 本来就没有
     }
     this.setCars(this.cars().filter((c: PairedCar) => c.id !== carIdHex));
+    this.put('hello', ''); // 删掉的车机的尺寸不能再用于别的车机
   }
 
   /** 上次连上的地址，最近的在前。 */

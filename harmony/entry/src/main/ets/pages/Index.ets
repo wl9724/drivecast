@@ -279,7 +279,8 @@ struct Index {
     }
     const m: ToWorker = {
       cmd: 'start', phoneId: toHex(phoneId), cars: cars, last: this.store.addresses(), manual: this.manual,
-      found: this.foundPaired(), hello: this.store.hello
+      // 只配对了一台车机时上次的尺寸才可靠：多台车机尺寸不同，提前按旧尺寸录屏会在连上后重开、多弹一次确认框
+      found: this.foundPaired(), hello: cars.length === 1 ? this.store.hello : ''
     };
     this.casterWorker().postMessage(m);
   }
